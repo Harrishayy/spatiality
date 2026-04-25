@@ -64,12 +64,15 @@ def main() -> None:
         method = "stub"
         gpu_label = "stub"
 
+    import os as _os
+    vggt_ckpt = _os.environ.get("VGGT_CHECKPOINT", "facebook/VGGT-1B") if args.real else "stub"
     with logfire.span(
         SPAN_INFERENCE_VGGT,
         scene_id=args.scene_id,
         frame_count=frame_count,
         gpu=gpu_label,
-    ):
+        model_id=vggt_ckpt,
+    ) as vggt_span:
         t0 = time.perf_counter()
         if args.real:
             _poses.run(frames_dir, scene)
@@ -77,6 +80,14 @@ def main() -> None:
             (scene / "cameras.json").write_text("[]\n")
             _stub_ply(scene / "points.ply")
         poses_dur = time.perf_counter() - t0
+        vggt_span.set_attribute("duration_s", round(poses_dur, 3))
+        # Number of cameras VGGT actually wrote (real run) or 0 (stub).
+        try:
+            import json as _json
+            cams = _json.loads((scene / "cameras.json").read_text())
+            vggt_span.set_attribute("cameras_written", len(cams))
+        except Exception:
+            pass
 
     manifest = Manifest.read(manifest_path)
     manifest.stages.poses.status = "complete"
@@ -91,18 +102,25 @@ def main() -> None:
         scene_id=args.scene_id,
         iterations=iterations,
         gpu=gpu_label,
-    ):
+    ) as splat_span:
         t0 = time.perf_counter()
         if args.real:
-            _splat.run(
+            milestones = _splat.run(
                 frames_dir=frames_dir,
                 cameras_json=scene / "cameras.json",
                 out_ply=scene / "splat.ply",
                 iterations=args.iterations,
+                scene_id=args.scene_id,
             )
+            splat_span.set_attribute("milestones_emitted", milestones)
         else:
             _stub_ply(scene / "splat.ply")
         splat_dur = time.perf_counter() - t0
+        splat_span.set_attribute("duration_s", round(splat_dur, 3))
+        splat_span.set_attribute(
+            "splat_size_mb",
+            round((scene / "splat.ply").stat().st_size / (1024 * 1024), 2),
+        )
 
     splat_size_mb = (scene / "splat.ply").stat().st_size / (1024 * 1024)
 

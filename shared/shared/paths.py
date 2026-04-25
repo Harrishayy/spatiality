@@ -1,9 +1,9 @@
 """Resolve where artifacts live, regardless of execution environment.
 
 Locally: defaults to <repo>/artifacts.
-On Kaggle: set ARTIFACTS_PATH=/kaggle/working/artifacts.
-On Render: set ARTIFACTS_PATH=/var/data/artifacts (per render.yaml).
-On Modal: mounted to /artifacts via Modal Volume.
+On Modal:  ARTIFACTS_PATH=/artifacts  (mounted via Modal Volume — set by modal_app.py).
+On Render: ARTIFACTS_PATH=/var/data/artifacts (per render.yaml).
+On Brev:   ARTIFACTS_PATH=$WORKSPACE/artifacts (set by deploy/brev/setup.sh).
 """
 
 from __future__ import annotations

@@ -20,9 +20,11 @@ import base64
 import io
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import logfire
 from anthropic import Anthropic
 from PIL import Image, ImageDraw, ImageFont
 
@@ -31,7 +33,8 @@ from .lift import Cluster
 GATEWAY_URL = os.environ.get(
     "PYDANTIC_GATEWAY_URL", "https://gateway-eu.pydantic.dev/proxy/anthropic/"
 )
-GATEWAY_KEY_ENV = "PYDANTIC_GATEWAY_KEY"
+# The same pylf_v... token doubles as Gateway auth — accept either var name.
+GATEWAY_KEY_ENVS = ("PYDANTIC_GATEWAY_KEY", "PYDANTIC_API_KEY")
 MODEL = os.environ.get("VLM_MODEL", "claude-haiku-4-5")
 BATCH_SIZE = int(os.environ.get("VLM_BATCH_SIZE", "5"))
 TILE_PX = int(os.environ.get("VLM_TILE_PX", "320"))
@@ -46,9 +49,11 @@ class Label:
 
 
 def _client() -> Anthropic:
-    key = os.environ.get(GATEWAY_KEY_ENV)
+    key = next((os.environ[k] for k in GATEWAY_KEY_ENVS if os.environ.get(k)), None)
     if not key:
-        raise RuntimeError(f"{GATEWAY_KEY_ENV} not set — cannot call Pydantic AI Gateway")
+        raise RuntimeError(
+            f"none of {GATEWAY_KEY_ENVS} set — cannot call Pydantic AI Gateway"
+        )
     return Anthropic(base_url=GATEWAY_URL, auth_token=key)
 
 
@@ -153,24 +158,52 @@ def _parse(text: str) -> dict[str, Label]:
 def _call_batch(client: Anthropic, batch: list[tuple[str, Image.Image]]) -> dict[str, Label]:
     grid = _tile(batch)
     b64 = _to_b64(grid)
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=600,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
-                    },
-                    {"type": "text", "text": _PROMPT},
-                ],
-            }
-        ],
-    )
-    text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+    cluster_ids = [cid for cid, _ in batch]
+    with logfire.span(
+        "segmentation.vlm_label.batch",
+        model_id=MODEL,
+        batch_size=len(batch),
+        cluster_ids=cluster_ids,
+    ) as span:
+        t0 = time.perf_counter()
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=600,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                        },
+                        {"type": "text", "text": _PROMPT},
+                    ],
+                }
+            ],
+        )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+        span.set_attribute("latency_ms", latency_ms)
+        span.set_attribute("input_tokens", resp.usage.input_tokens)
+        span.set_attribute("output_tokens", resp.usage.output_tokens)
+        span.set_attribute("model_response_id", resp.id)
+        # Gateway also auto-attaches cost; this is a backstop estimate.
+        span.set_attribute("est_cost_usd", _estimate_cost(resp.usage.input_tokens, resp.usage.output_tokens))
     return _parse(text)
+
+
+# Claude Haiku 4.5 published pricing (per 1M tokens). Update if pricing changes.
+_HAIKU_INPUT_PER_M = 1.0
+_HAIKU_OUTPUT_PER_M = 5.0
+
+
+def _estimate_cost(input_tokens: int, output_tokens: int) -> float:
+    return round(
+        (input_tokens / 1_000_000) * _HAIKU_INPUT_PER_M
+        + (output_tokens / 1_000_000) * _HAIKU_OUTPUT_PER_M,
+        6,
+    )
 
 
 def label_clusters(scene_dir: Path, clusters: list[Cluster]) -> dict[str, Label]:

@@ -5,11 +5,11 @@
   "stages": {
     "capture": {
       "status": "complete",
-      "duration_s": 0.0006
+      "duration_s": 4.3111
     },
     "poses": {
       "status": "complete",
-      "duration_s": 0.0001,
+      "duration_s": 0.0005,
       "method": "stub"
     },
     "splat": {
@@ -19,8 +19,9 @@
     },
     "segmentation": {
       "status": "complete",
-      "duration_s": 0.0002,
-      "object_count": 2
+      "duration_s": 0.0005,
+      "object_count": 2,
+      "method": "stub"
     }
   },
   "artifacts": {
@@ -30,7 +31,7 @@
     "cameras_json": "/artifacts/scenes/test_scene_v0/cameras.json"
   },
   "stats": {
-    "frame_count": 0,
+    "frame_count": 60,
     "object_count": 2,
     "splat_size_mb": 0.0
   },

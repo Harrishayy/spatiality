@@ -14,7 +14,7 @@ Read in this order:
 8. [`modules/07_agent.md`](./modules/07_agent.md) — **Devin spec** — chat backend
 9. [`modules/08_observability.md`](./modules/08_observability.md) — Logfire + Pydantic AI Gateway spend caps
 10. [`modules/09_deployment.md`](./modules/09_deployment.md) — Render + Modal/Brev configs
-11. [`modules/10_kaggle.md`](./modules/10_kaggle.md) — Kaggle offline runbook (full bundle + kernel commands)
+11. ~~[`modules/10_kaggle.md`](./modules/10_kaggle.md)~~ — **archived**. Kaggle was the early-test path before Modal credits landed; the bundle/kernel artifacts were swept to `old/kaggle/` on 2026-04-25. Kept only as reference for offline-bundle patterns. Inference now ships exclusively on Modal (`plans/modules/09_deployment.md` + `inference/modal_app.py`).
 
 ## Owners
 - **Harrish + Claude Code:** capture, inference, segmentation, object-isolation, observability, deployment glue.

@@ -16,7 +16,7 @@
 Each Claude Code session is scoped to one of these. The user's first prompt will name which session this is. Do not touch modules outside the named scope — generate stub outputs matching the storage schemas instead.
 
 - **Session A — Bootstrap.** Reads: README, ORCHESTRATOR, 05_storage, 08_observability, 09_deployment. Output: repo scaffold, justfile, schemas typed in pydantic + TS, render.yaml, Modal app skeleton, Logfire wired into agent and pipeline stubs.
-- **Session B — Pipeline.** Reads: 01_capture, 02_inference, 10_kaggle. Output: working capture and inference modules, Kaggle bundle build script, Modal app function body, end-to-end smoke test on `samples/`.
+- **Session B — Pipeline.** Reads: 01_capture, 02_inference, 09_deployment (Modal section). Output: working capture and inference modules, Modal app function body, end-to-end smoke test on `samples/`. (10_kaggle is archived at `old/kaggle/` — Kaggle was the early test path; we ship on Modal.)
 - **Session C — Segmentation.** Reads: 03_segmentation. Output: SAM 3.1 mask generation + VLM labeling pipeline; emits annotations.json conforming to the schema.
 - **Session D — Polish.** Reads: 04_object_isolation. Output: integration testing, second test scene, demo-bake script.
 

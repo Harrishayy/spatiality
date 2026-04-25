@@ -4,16 +4,16 @@ Spec: plans/modules/03_segmentation.md.
 - Pick 4-6 keyframes evenly distributed by camera angle (cameras.json).
 - Run SAM 3.1 in automatic mode per keyframe; collect mask dicts.
 
-Falls back to SAM 2 if SAM 3.1 isn't installed (per "failure paths" in spec).
-Both packages expose the same automatic-mask-generator shape:
-  generate(np.ndarray HxWx3) -> [{segmentation: bool HxW, bbox: [x,y,w,h],
-                                   area: int, predicted_iou: float, ...}, ...]
+SAM 3.1 only — no fallback to SAM 2 or any other version. Lazy-downloads weights
+from HF Hub the first time it's invoked (gated repo, requires HF_TOKEN env var).
 
 Env vars:
-  SAM3_WEIGHTS  — path to sam3 .pt
-  SAM3_CONFIG   — config name, e.g. "sam3_hiera_l.yaml" (default)
-  SAM2_WEIGHTS  — path to sam2 .pt (used only if sam3 unavailable)
-  SAM2_CONFIG   — config name, e.g. "sam2_hiera_l.yaml" (default)
+  SAM3_WEIGHTS         — path to a local sam3 .pt; if missing, fetched from HF
+  SAM3_CONFIG          — config name passed to build_sam3 (default: "sam3_hiera_l.yaml")
+  SAM3_HF_REPO         — HF repo id with weights (default: "facebook/sam3.1")
+  SAM3_SNAPSHOT_DIR    — where to materialize the HF snapshot
+                         (default: same dir as SAM3_WEIGHTS, or /tmp/sam3-snapshot)
+  HF_TOKEN             — gated repo auth (required for first download only)
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ from PIL import Image
 
 SAM3_WEIGHTS = os.environ.get("SAM3_WEIGHTS")
 SAM3_CONFIG = os.environ.get("SAM3_CONFIG", "sam3_hiera_l.yaml")
-SAM2_WEIGHTS = os.environ.get("SAM2_WEIGHTS")
-SAM2_CONFIG = os.environ.get("SAM2_CONFIG", "sam2_hiera_l.yaml")
+SAM3_HF_REPO = os.environ.get("SAM3_HF_REPO", "facebook/sam3.1")
+SAM3_SNAPSHOT_DIR = os.environ.get("SAM3_SNAPSHOT_DIR")
 
 
 @dataclass
@@ -67,24 +67,35 @@ def pick_keyframes(cameras: list[dict], n: int = 5) -> list[int]:
         return [int(round(i * (total - 1) / (n - 1))) for i in range(n)]
 
 
+def _ensure_weights() -> str:
+    """Return a usable path to sam3 weights, downloading from HF Hub if needed."""
+    if SAM3_WEIGHTS and Path(SAM3_WEIGHTS).exists():
+        return SAM3_WEIGHTS
+
+    # Fall back to an HF snapshot; pulls the gated repo on first call.
+    from huggingface_hub import snapshot_download
+
+    target = Path(SAM3_SNAPSHOT_DIR) if SAM3_SNAPSHOT_DIR else (
+        Path(SAM3_WEIGHTS).parent / "sam3-snapshot" if SAM3_WEIGHTS else Path("/tmp/sam3-snapshot")
+    )
+    target.mkdir(parents=True, exist_ok=True)
+    snapshot_download(repo_id=SAM3_HF_REPO, local_dir=str(target), token=os.environ.get("HF_TOKEN"))
+
+    # Find the weight file inside the snapshot. Prefer .pt over .safetensors over .bin.
+    for ext in (".pt", ".pth", ".safetensors", ".bin"):
+        hits = sorted(target.rglob(f"*{ext}"))
+        if hits:
+            return str(hits[0])
+    raise RuntimeError(f"no weight file found in HF snapshot at {target}")
+
+
 def _build_sam3():
     from sam3.build_sam import build_sam3  # type: ignore
     from sam3.automatic_mask_generator import SAM3AutomaticMaskGenerator  # type: ignore
 
-    if not SAM3_WEIGHTS:
-        raise RuntimeError("SAM3_WEIGHTS env var not set")
-    sam = build_sam3(SAM3_CONFIG, SAM3_WEIGHTS, device=_device())
-    return SAM3AutomaticMaskGenerator(sam), "sam3"
-
-
-def _build_sam2():
-    from sam2.build_sam import build_sam2  # type: ignore
-    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
-
-    if not SAM2_WEIGHTS:
-        raise RuntimeError("SAM2_WEIGHTS env var not set")
-    sam = build_sam2(SAM2_CONFIG, SAM2_WEIGHTS, device=_device())
-    return SAM2AutomaticMaskGenerator(sam), "sam2"
+    weights_path = _ensure_weights()
+    sam = build_sam3(SAM3_CONFIG, weights_path, device=_device())
+    return SAM3AutomaticMaskGenerator(sam)
 
 
 def _device() -> str:
@@ -96,22 +107,19 @@ def _device() -> str:
         return "cpu"
 
 
-def build_generator() -> tuple[Any, str]:
-    """Try SAM 3.1, fall back to SAM 2 (per spec failure paths)."""
-    last_err: Exception | None = None
-    for builder in (_build_sam3, _build_sam2):
-        try:
-            return builder()
-        except Exception as e:
-            last_err = e
-    raise RuntimeError(f"no segmentation backend available: {last_err}")
+def build_generator() -> Any:
+    """Build a SAM 3.1 automatic mask generator. Raises if SAM 3.1 isn't available."""
+    return _build_sam3()
 
 
 def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
-    """Generate masks for each keyframe; return flat mask list + backend name."""
+    """Generate masks for each keyframe; return flat mask list + backend name ('sam3')."""
+    import logfire
+
     cameras = json.loads((scene_dir / "cameras.json").read_text())
     frame_dir = scene_dir / "frames"
-    generator, backend = build_generator()
+    generator = build_generator()
+    backend = "sam3"
 
     masks: list[Mask] = []
     for idx in keyframes:
@@ -125,7 +133,14 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
             frame_path = sorted_frames[idx]
 
         img = np.array(Image.open(frame_path).convert("RGB"))
-        raw = generator.generate(img)
+        with logfire.span(
+            "segmentation.sam3.keyframe",
+            keyframe_idx=idx,
+            frame_name=frame_path.name,
+            backend=backend,
+        ) as span:
+            raw = generator.generate(img)
+            span.set_attribute("mask_count", len(raw))
         for j, m in enumerate(raw):
             x, y, w, h = (int(v) for v in m["bbox"])
             masks.append(

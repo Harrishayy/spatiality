@@ -7,25 +7,37 @@ export function useScene(sceneId: string) {
   const manifest = useQuery({
     queryKey: ["manifest", sceneId],
     queryFn: () => fetchManifest(sceneId),
-    refetchInterval: (q) =>
-      q.state.data?.status === "ready" || q.state.data?.status === "failed"
-        ? false
-        : POLL_MS,
+    // Poll until both top-level pipeline AND segmentation reach a terminal
+    // state. We can't stop on status="ready" alone — segmentation may still
+    // be running in the background after splat completes.
+    refetchInterval: (q) => {
+      const m = q.state.data;
+      if (!m) return POLL_MS;
+      const top = m.status;
+      const seg = m.stages.segmentation.status;
+      const topDone = top === "ready" || top === "failed";
+      const segDone = seg === "complete" || seg === "failed";
+      return topDone && segDone ? false : POLL_MS;
+    },
   });
 
-  const ready = manifest.data?.status === "ready";
+  const splatReady = manifest.data?.stages.splat.status === "complete";
+  const segReady = manifest.data?.stages.segmentation.status === "complete";
 
   const annotations = useQuery({
     queryKey: ["annotations", sceneId],
     queryFn: () => fetchAnnotations(sceneId),
-    enabled: ready,
+    enabled: segReady,
   });
 
   const splatUrl = useQuery({
     queryKey: ["splatUrl", sceneId],
     queryFn: () => fetchSplatUrl(sceneId),
-    enabled: ready,
+    enabled: splatReady,
   });
 
-  return { manifest, annotations, splatUrl, ready };
+  // Backward-compat: `ready` used to mean "everything ready". Keep it as the
+  // narrower "splat is renderable" signal — that's what its only consumer
+  // (the page) actually needed.
+  return { manifest, annotations, splatUrl, splatReady, segReady, ready: splatReady };
 }

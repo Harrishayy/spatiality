@@ -22,6 +22,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import logfire
 import numpy as np
 from sklearn.cluster import DBSCAN
 
@@ -59,69 +60,82 @@ def cluster(
     max_clusters: int = 12,
 ) -> list[Cluster]:
     """DBSCAN on Gaussian centers, then anchor each cluster to a (frame, mask)."""
-    centers = load_centers(scene_dir / "splat.ply")
-    if centers.shape[0] == 0:
-        return []
+    with logfire.span(
+        "segmentation.lift.cluster",
+        eps=eps,
+        min_samples=min_samples,
+        max_clusters=max_clusters,
+        mask_count=len(masks),
+    ) as span:
+        centers = load_centers(scene_dir / "splat.ply")
+        span.set_attribute("gaussian_count", int(centers.shape[0]))
+        if centers.shape[0] == 0:
+            span.set_attribute("cluster_count", 0)
+            return []
 
-    db = DBSCAN(eps=eps, min_samples=min_samples).fit(centers)
-    labels = db.labels_  # -1 = noise
-
-    cameras = json.loads((scene_dir / "cameras.json").read_text())
-    masks_by_frame_name: dict[str, list[Mask]] = {}
-    for m in masks:
-        masks_by_frame_name.setdefault(m.frame_name, []).append(m)
-
-    # Quick cam lookup by frame name.
-    cam_by_frame: dict[str, dict] = {c["frame"]: c for c in cameras if "frame" in c}
-
-    clusters: list[Cluster] = []
-    unique = sorted({lbl for lbl in labels if lbl != -1})
-    for cid in unique[:max_clusters]:
-        idx = np.where(labels == cid)[0]
-        if idx.size < min_samples:
-            continue
-        pts = centers[idx]
-        centroid = pts.mean(axis=0)
-        bbox_lo = pts.min(axis=0)
-        bbox_hi = pts.max(axis=0)
-
-        anchor_frame: str | None = None
-        anchor_bbox: tuple[int, int, int, int] | None = None
-        anchor_area = 0
-        for frame_name, frame_masks in masks_by_frame_name.items():
-            cam = cam_by_frame.get(frame_name)
-            if cam is None:
-                continue
-            ext = np.array(cam["extrinsic"], dtype=np.float64)
-            intr = np.array(cam["intrinsic"], dtype=np.float64)
-            proj = _project(centroid, ext, intr)
-            if proj is None:
-                continue
-            u, v, _ = proj
-            for m in frame_masks:
-                h, w = m.segmentation.shape
-                if not (0 <= u < w and 0 <= v < h):
-                    continue
-                if not m.segmentation[v, u]:
-                    continue
-                if m.area > anchor_area:
-                    anchor_area = m.area
-                    anchor_frame = frame_name
-                    anchor_bbox = m.bbox
-
-        clusters.append(
-            Cluster(
-                id=f"obj_{cid + 1:03d}",
-                gaussian_indices=idx.tolist(),
-                centroid=centroid,
-                bbox_3d=(
-                    (float(bbox_lo[0]), float(bbox_lo[1]), float(bbox_lo[2])),
-                    (float(bbox_hi[0]), float(bbox_hi[1]), float(bbox_hi[2])),
-                ),
-                anchor_frame=anchor_frame,
-                anchor_mask_bbox=anchor_bbox,
-                anchor_area=anchor_area,
-            )
+        db = DBSCAN(eps=eps, min_samples=min_samples).fit(centers)
+        labels = db.labels_  # -1 = noise
+        span.set_attribute(
+            "noise_fraction",
+            float((labels == -1).sum()) / max(1, labels.size),
         )
 
-    return clusters
+        cameras = json.loads((scene_dir / "cameras.json").read_text())
+        masks_by_frame_name: dict[str, list[Mask]] = {}
+        for m in masks:
+            masks_by_frame_name.setdefault(m.frame_name, []).append(m)
+
+        cam_by_frame: dict[str, dict] = {c["frame"]: c for c in cameras if "frame" in c}
+
+        clusters: list[Cluster] = []
+        unique = sorted({lbl for lbl in labels if lbl != -1})
+        for cid in unique[:max_clusters]:
+            idx = np.where(labels == cid)[0]
+            if idx.size < min_samples:
+                continue
+            pts = centers[idx]
+            centroid = pts.mean(axis=0)
+            bbox_lo = pts.min(axis=0)
+            bbox_hi = pts.max(axis=0)
+
+            anchor_frame: str | None = None
+            anchor_bbox: tuple[int, int, int, int] | None = None
+            anchor_area = 0
+            for frame_name, frame_masks in masks_by_frame_name.items():
+                cam = cam_by_frame.get(frame_name)
+                if cam is None:
+                    continue
+                ext = np.array(cam["extrinsic"], dtype=np.float64)
+                intr = np.array(cam["intrinsic"], dtype=np.float64)
+                proj = _project(centroid, ext, intr)
+                if proj is None:
+                    continue
+                u, v, _ = proj
+                for m in frame_masks:
+                    h, w = m.segmentation.shape
+                    if not (0 <= u < w and 0 <= v < h):
+                        continue
+                    if not m.segmentation[v, u]:
+                        continue
+                    if m.area > anchor_area:
+                        anchor_area = m.area
+                        anchor_frame = frame_name
+                        anchor_bbox = m.bbox
+
+            clusters.append(
+                Cluster(
+                    id=f"obj_{cid + 1:03d}",
+                    gaussian_indices=idx.tolist(),
+                    centroid=centroid,
+                    bbox_3d=(
+                        (float(bbox_lo[0]), float(bbox_lo[1]), float(bbox_lo[2])),
+                        (float(bbox_hi[0]), float(bbox_hi[1]), float(bbox_hi[2])),
+                    ),
+                    anchor_frame=anchor_frame,
+                    anchor_mask_bbox=anchor_bbox,
+                    anchor_area=anchor_area,
+                )
+            )
+
+        span.set_attribute("cluster_count", len(clusters))
+        return clusters

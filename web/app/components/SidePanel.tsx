@@ -1,6 +1,6 @@
 "use client";
 
-import type { Annotation, Manifest } from "@/lib/types";
+import type { Annotation, Manifest, StageStatus } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { ChatPanel } from "./ChatPanel";
 import { PipelineProgress } from "./PipelineProgress";
@@ -11,6 +11,7 @@ interface Props {
   messages: import("@/lib/types").ChatMessage[];
   onSend: (text: string) => void;
   loading: boolean;
+  segStatus: StageStatus;
 }
 
 export function SidePanel({
@@ -19,6 +20,7 @@ export function SidePanel({
   messages,
   onSend,
   loading,
+  segStatus,
 }: Props) {
   const isolatedIds = useUI((s) => s.isolatedIds);
   const clearIsolated = useUI((s) => s.clearIsolated);
@@ -33,7 +35,7 @@ export function SidePanel({
     >
       <PipelineProgress manifest={manifest} />
 
-      <ObjectsList annotations={annotations} />
+      <ObjectsList annotations={annotations} segStatus={segStatus} />
 
       {isolatedIds.size > 0 && (
         <button
@@ -60,15 +62,31 @@ export function SidePanel({
   );
 }
 
-function ObjectsList({ annotations }: { annotations: Annotation[] }) {
+function ObjectsList({
+  annotations,
+  segStatus,
+}: {
+  annotations: Annotation[];
+  segStatus: StageStatus;
+}) {
   const selectedId = useUI((s) => s.selectedId);
   const setSelected = useUI((s) => s.setSelected);
   const isolatedIds = useUI((s) => s.isolatedIds);
   const toggleIsolated = useUI((s) => s.toggleIsolated);
 
   if (annotations.length === 0) {
+    let label: string;
+    if (segStatus === "running") label = "Segmenting…";
+    else if (segStatus === "pending") label = "Segmentation pending.";
+    else if (segStatus === "failed") label = "Segmentation failed.";
+    else label = "No objects found.";
     return (
-      <div className="text-xs italic text-ink-500">No annotations yet.</div>
+      <div className="flex items-center gap-2 text-xs italic text-ink-500">
+        {segStatus === "running" && (
+          <span className="size-2 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-400" />
+        )}
+        <span>{label}</span>
+      </div>
     );
   }
   return (

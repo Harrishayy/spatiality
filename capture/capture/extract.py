@@ -58,7 +58,7 @@ def extract(
     video: Path,
     out_frames: Path,
     fps: float = 2.0,
-    max_frames: int | None = 60,
+    max_frames: int | None = 400,
     target_long_side: int = 1920,
 ) -> tuple[int, dict]:
     """Extract frames at `fps`, downscaled if long side > `target_long_side`.

@@ -117,6 +117,25 @@ image = (
         # 3DGRUT compile — tiny-cuda-nn + cutlass. Slow (~15-20 min first time).
         "pip install --no-build-isolation --no-deps -e /opt/3dgrut",
     )
+    # Late-layered tail-pip deps. Adding here keeps the heavy CUDA-compile
+    # layers above (fused-ssim / sam3 / 3DGRUT) cached across rebuilds.
+    #
+    # SAM 3.1's `pip install --no-build-isolation 'sam3 @ git+...'` doesn't
+    # pull declared runtime deps, and its module-load chain ALSO crosses
+    # into `sam3.train.*` (via sam3.model.sam1_task_predictor → tracker_base
+    # → train.data.collator). Determined by walking the import tree of the
+    # entry chain (sam3/__init__ → model_builder → model/* → train/data/*).
+    # Without any one of these, `import sam3` 500s before our code runs.
+    .pip_install(
+        "pycocotools",       # sam3.train.data.coco_json_loaders
+        "psutil",            # sam3.model.sam3_video_predictor
+        "iopath>=0.1.10",    # sam3.model.* path I/O
+        "submitit",          # sam3.train.* job launcher
+        "timm>=1.0.17",      # sam3 model zoo wrappers
+        "ftfy==6.1.1",       # sam3.model.tokenizer_ve text normalization
+        "regex",             # sam3.model.tokenizer_ve
+        "open_clip_torch",   # sam3.model.text_encoder_ve / tokenizer_ve
+    )
     # Repo packages last so editing them only rebuilds these final layers.
     .add_local_dir("./shared", remote_path="/repo/shared", copy=True)
     .add_local_dir("./capture", remote_path="/repo/capture", copy=True)
@@ -164,16 +183,23 @@ HF_SECRET = modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])
 )
 @modal.fastapi_endpoint(method="POST", label="run-inference")
 def run_inference(payload: dict) -> dict:
-    """VGGT poses + 3DGRUT splat for a scene whose frames are already in the artifacts volume.
+    """VGGT poses → 3DGRUT splat, with a volume commit between each stage so
+    the web sees cameras.json the moment poses finishes and splat.ply the
+    moment training finishes — without waiting for segmentation.
+
+    Auto-spawns run_segmentation as fire-and-forget once splat is on disk
+    (controlled by payload.segment, default true).
 
     POST body:
-      {"scene_id": "...", "iterations": 7000}
+      {"scene_id": "...", "iterations": 7000, "keyframes": 5, "segment": true}
     """
     import os
     import subprocess
 
     scene_id = payload["scene_id"]
     iterations = int(payload.get("iterations", 7000))
+    keyframes = int(payload.get("keyframes", 5))
+    segment = bool(payload.get("segment", True))
 
     env = os.environ.copy()
     env.update(COMMON_ENV)
@@ -181,24 +207,86 @@ def run_inference(payload: dict) -> dict:
     # Volume.reload() makes sure we see whatever /agent just uploaded.
     artifacts_volume.reload()
 
-    cmd = [
+    # Capture frames are uploaded by /agent before we run; mark complete so
+    # the web's PipelineProgress shows it as done from t=0.
+    _stage_complete(scene_id, "capture")
+    _set_top_status(scene_id, "processing")
+    artifacts_volume.commit()
+
+    # ── Stage 1: poses (VGGT) ───────────────────────────────────────────
+    poses_cmd = [
         "python", "-m", "inference",
         "--scene-id", scene_id,
         "--real",
+        "--stage", "poses",
         "--iterations", str(iterations),
     ]
     try:
-        subprocess.run(cmd, check=True, env=env)
+        subprocess.run(poses_cmd, check=True, env=env)
     except subprocess.CalledProcessError as exc:
-        _finalize_manifest(scene_id, failed=("poses", "splat"), error=str(exc))
+        _stage_failed(scene_id, "poses", str(exc))
+        _set_top_status(scene_id, "failed")
         artifacts_volume.commit()
         raise
-
-    # Frames present + inference succeeded → capture/poses/splat all complete.
-    _finalize_manifest(scene_id, completed=("capture", "poses", "splat"))
-    # Persist outputs back to the volume so /agent can download them.
+    # cli.py already wrote stages.poses.status=complete + cameras.json.
     artifacts_volume.commit()
-    return {"status": "ok", "scene_id": scene_id, "iterations": iterations}
+
+    # ── Stage 2: splat (3DGRUT) ─────────────────────────────────────────
+    splat_cmd = [
+        "python", "-m", "inference",
+        "--scene-id", scene_id,
+        "--real",
+        "--stage", "splat",
+        "--iterations", str(iterations),
+    ]
+    try:
+        subprocess.run(splat_cmd, check=True, env=env)
+    except subprocess.CalledProcessError as exc:
+        _stage_failed(scene_id, "splat", str(exc))
+        _set_top_status(scene_id, "failed")
+        artifacts_volume.commit()
+        raise
+    # cli.py already wrote stages.splat.status=complete + flipped status=ready.
+    artifacts_volume.commit()
+
+    # ── Stage 3: segmentation, fire-and-forget ──────────────────────────
+    spawned = False
+    if segment:
+        try:
+            # _segment_async is a plain @app.function — fastapi_endpoint
+            # wrappers can't be invoked via .spawn(); the runbook calls this
+            # out at MODAL_RUNBOOK.md:160. The first run hit that and 500'd
+            # at the end despite splat being on disk.
+            _segment_async.spawn(scene_id, keyframes)
+            spawned = True
+        except Exception as exc:
+            print(f"segmentation spawn failed: {exc!r}", flush=True)
+
+    return {
+        "status": "ok",
+        "scene_id": scene_id,
+        "iterations": iterations,
+        "segmentation_spawned": spawned,
+    }
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB",
+    timeout=600,
+    volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
+    secrets=[LOGFIRE_SECRET, GATEWAY_SECRET, HF_SECRET],
+    cpu=4.0,
+    memory=16384,
+)
+def _segment_async(scene_id: str, keyframes: int) -> dict:
+    """Plain (non-fastapi) entrypoint for fire-and-forget segmentation.
+
+    Bodies of `run_segmentation` (web) and this function are identical and
+    delegate to the same in-container subprocess; the split only exists
+    because @modal.fastapi_endpoint functions can't be invoked via .spawn().
+    """
+    return _segment_impl(scene_id, keyframes)
 
 
 @app.function(
@@ -212,22 +300,33 @@ def run_inference(payload: dict) -> dict:
 )
 @modal.fastapi_endpoint(method="POST", label="run-segmentation")
 def run_segmentation(payload: dict) -> dict:
-    """SAM 3.1 masks + Claude Haiku VLM labels via Pydantic AI Gateway.
+    """SAM 3.1 masks + lift_masks projection + Claude Haiku VLM labels.
 
     POST body:
       {"scene_id": "...", "keyframes": 5}
     Requires inference outputs (splat.ply, cameras.json, frames/) in the volume.
     """
-    import os
-    import subprocess
-
     scene_id = payload["scene_id"]
     keyframes = int(payload.get("keyframes", 5))
+    return _segment_impl(scene_id, keyframes)
+
+
+def _segment_impl(scene_id: str, keyframes: int) -> dict:
+    """Shared body for the web endpoint AND the spawn-able plain function.
+
+    Commits the volume once before (so the web flips to segmentation=running
+    immediately) and once after (so annotations.json appears atomically).
+    """
+    import os
+    import subprocess
 
     env = os.environ.copy()
     env.update(COMMON_ENV)
 
     artifacts_volume.reload()
+
+    _stage_running(scene_id, "segmentation")
+    artifacts_volume.commit()
 
     cmd = [
         "python", "-m", "segmentation",
@@ -238,57 +337,61 @@ def run_segmentation(payload: dict) -> dict:
     try:
         subprocess.run(cmd, check=True, env=env)
     except subprocess.CalledProcessError as exc:
-        _finalize_manifest(scene_id, failed=("segmentation",), error=str(exc))
+        _stage_failed(scene_id, "segmentation", str(exc))
         artifacts_volume.commit()
         raise
 
-    _finalize_manifest(scene_id, completed=("segmentation",))
     artifacts_volume.commit()
     return {"status": "ok", "scene_id": scene_id, "keyframes": keyframes}
 
 
-def _finalize_manifest(
-    scene_id: str,
-    *,
-    completed: tuple[str, ...] = (),
-    failed: tuple[str, ...] = (),
-    error: str | None = None,
-) -> None:
-    """Mark stages and roll up the top-level manifest status.
+def _manifest_path(scene_id: str) -> str:
+    return f"/artifacts/scenes/{scene_id}/manifest.json"
 
-    Without this, manifest.status is left at "queued" forever even after the
-    splat is on disk, and the web viewer polls indefinitely. The per-stage
-    code in inference/segmentation modules updates its own stage entry, but
-    nothing was rolling that up to the top-level status — that's this helper.
 
-    Roll-up: top-level "ready" once both poses and splat are complete.
-    Segmentation is optional for the demo. Any "failed" stage → "failed".
-    """
+def _read_manifest(scene_id: str):
+    """Late import so this module can be imported without /repo on sys.path."""
     import os
-
-    # Late import — runs inside the Modal container, where /repo/shared is on sys.path.
     from shared.schemas import Manifest
 
-    manifest_path = f"/artifacts/scenes/{scene_id}/manifest.json"
-    if not os.path.exists(manifest_path):
+    path = _manifest_path(scene_id)
+    if not os.path.exists(path):
+        return None
+    return Manifest.read(path)
+
+
+def _stage_running(scene_id: str, stage: str) -> None:
+    m = _read_manifest(scene_id)
+    if m is None:
         return
+    getattr(m.stages, stage).status = "running"
+    m.status = "processing"
+    m.write_atomic(_manifest_path(scene_id))
 
-    m = Manifest.read(manifest_path)
-    for name in completed:
-        getattr(m.stages, name).status = "complete"
-    for name in failed:
-        getattr(m.stages, name).status = "failed"
-    if error:
-        m.errors.append(error)
 
-    if any(getattr(m.stages, n).status == "failed" for n in ("capture", "poses", "splat", "segmentation")):
-        m.status = "failed"
-    elif m.stages.poses.status == "complete" and m.stages.splat.status == "complete":
-        m.status = "ready"
-    elif any(getattr(m.stages, n).status == "running" for n in ("capture", "poses", "splat", "segmentation")):
-        m.status = "processing"
+def _stage_complete(scene_id: str, stage: str) -> None:
+    m = _read_manifest(scene_id)
+    if m is None:
+        return
+    getattr(m.stages, stage).status = "complete"
+    m.write_atomic(_manifest_path(scene_id))
 
-    m.write_atomic(manifest_path)
+
+def _stage_failed(scene_id: str, stage: str, error: str) -> None:
+    m = _read_manifest(scene_id)
+    if m is None:
+        return
+    getattr(m.stages, stage).status = "failed"
+    m.errors.append(f"{stage}: {error}")
+    m.write_atomic(_manifest_path(scene_id))
+
+
+def _set_top_status(scene_id: str, status: str) -> None:
+    m = _read_manifest(scene_id)
+    if m is None:
+        return
+    m.status = status
+    m.write_atomic(_manifest_path(scene_id))
 
 
 @app.function(

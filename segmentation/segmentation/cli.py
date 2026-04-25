@@ -65,8 +65,21 @@ def main() -> None:
         help="Run real SAM + VLM pipeline. Default: stub.",
     )
     parser.add_argument("--keyframes", type=int, default=5)
-    parser.add_argument("--eps", type=float, default=0.15, help="DBSCAN eps (Gaussian center distance)")
-    parser.add_argument("--min-samples", type=int, default=30, help="DBSCAN min samples per cluster")
+    parser.add_argument(
+        "--lift-mode",
+        choices=["masks", "dbscan"],
+        default="masks",
+        help="masks: project SAM masks into 3D and merge by Jaccard (fast, default). "
+        "dbscan: legacy DBSCAN-on-centers (slow on large splats).",
+    )
+    parser.add_argument("--eps", type=float, default=0.15, help="DBSCAN eps (dbscan mode only)")
+    parser.add_argument("--min-samples", type=int, default=30, help="DBSCAN min samples (dbscan mode only)")
+    parser.add_argument(
+        "--jaccard-min",
+        type=float,
+        default=0.30,
+        help="Mask-merge threshold (masks mode only)",
+    )
     args = parser.parse_args()
 
     configure_logfire("segmentation")
@@ -130,7 +143,6 @@ def _run_real(
     scene: Path, args: argparse.Namespace
 ) -> tuple[AnnotationsFile, float, float, str, int, int]:
     # Imported lazily so `--stub` runs without these heavy deps installed.
-    from . import lift as _lift
     from . import sam as _sam
     from . import vlm as _vlm
 
@@ -149,9 +161,18 @@ def _run_real(
         span.set_attribute("backend", backend)
         sam_dur = time.perf_counter() - t0
 
-    clusters = _lift.cluster(
-        scene, masks, eps=args.eps, min_samples=args.min_samples
-    )
+    if args.lift_mode == "masks":
+        from . import lift_masks as _lift_masks
+
+        clusters = _lift_masks.cluster_via_masks(
+            scene, masks, jaccard_min=args.jaccard_min
+        )
+    else:
+        from . import lift as _lift
+
+        clusters = _lift.cluster(
+            scene, masks, eps=args.eps, min_samples=args.min_samples
+        )
 
     with logfire.span(
         SPAN_SEGMENTATION_VLM,

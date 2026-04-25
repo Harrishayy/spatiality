@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Header } from "@/components/Header";
+import { PipelineProgress } from "@/components/PipelineProgress";
 import { SidePanel } from "@/components/SidePanel";
 import { WhereAmIButton } from "@/components/WhereAmIButton";
 import { useChat } from "@/hooks/useChat";
 import { useScene } from "@/hooks/useScene";
 import { DEMO_SCENE_ID } from "@/lib/api";
+import type { Manifest, StageStatus } from "@/lib/types";
 
 const SplatViewer = dynamic(
   () => import("@/components/SplatViewer").then((m) => m.SplatViewer),
@@ -18,7 +20,7 @@ const SplatViewer = dynamic(
 export default function ScenePage() {
   const params = useParams<{ id: string }>();
   const sceneId = params?.id ?? DEMO_SCENE_ID;
-  const { manifest, annotations, splatUrl, ready } = useScene(sceneId);
+  const { manifest, annotations, splatUrl, splatReady, segReady } = useScene(sceneId);
   const { messages, send, append } = useChat(sceneId);
   const [showSide, setShowSide] = useState(false);
 
@@ -31,8 +33,13 @@ export default function ScenePage() {
   }, []);
 
   const m = manifest.data;
-  const annos = annotations.data ?? [];
+  // Stable reference: react-query gives us the same array across renders when
+  // data is unchanged; the ?? [] fallback used to mint a fresh array each
+  // render, which would tear down the SplatViewer on every poll.
+  const annos = useMemo(() => annotations.data ?? [], [annotations.data]);
   const emptySplat = (m?.stats.splat_size_mb ?? 0) <= 0.001;
+  const segStatus: StageStatus = m?.stages.segmentation.status ?? "pending";
+  const failed = m?.status === "failed";
 
   return (
     <div className="flex h-screen w-screen flex-col bg-ink-950">
@@ -40,18 +47,18 @@ export default function ScenePage() {
 
       <main className="relative flex min-h-0 flex-1">
         <section className="relative min-h-0 flex-1">
-          {ready && splatUrl.data ? (
+          {splatReady && splatUrl.data ? (
             <SplatViewer
               splatUrl={splatUrl.data}
               annotations={annos}
               emptySplat={emptySplat}
             />
           ) : (
-            <LoadingScreen status={m?.status} />
+            <PipelinePending manifest={m} failed={failed} />
           )}
 
           <div className="pointer-events-none absolute inset-x-0 bottom-3 flex items-center justify-center gap-2 px-3">
-            {ready && (
+            {splatReady && (
               <div className="pointer-events-auto">
                 <WhereAmIButton
                   sceneId={sceneId}
@@ -70,7 +77,18 @@ export default function ScenePage() {
             </button>
           </div>
 
-          {emptySplat && ready && (
+          {splatReady && !segReady && segStatus !== "failed" && (
+            <SegmentingBanner status={segStatus} />
+          )}
+
+          {splatReady && segStatus === "failed" && (
+            <FailedBanner
+              title="Segmentation failed"
+              detail={m?.errors?.[m.errors.length - 1]}
+            />
+          )}
+
+          {emptySplat && splatReady && (
             <div className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-md border border-ink-700/60 bg-ink-900/70 px-3 py-2 text-xs text-ink-300 backdrop-blur">
               <p>
                 <strong className="text-ink-100">Demo placeholder:</strong>{" "}
@@ -96,7 +114,8 @@ export default function ScenePage() {
               annotations={annos}
               messages={messages}
               onSend={send}
-              loading={!ready}
+              loading={!splatReady}
+              segStatus={segStatus}
             />
           )}
         </div>
@@ -105,19 +124,71 @@ export default function ScenePage() {
   );
 }
 
-function LoadingScreen({ status }: { status?: string }) {
+function PipelinePending({
+  manifest,
+  failed,
+}: {
+  manifest?: Manifest;
+  failed: boolean;
+}) {
   return (
-    <div className="flex h-full w-full items-center justify-center">
-      <div className="flex flex-col items-center gap-3 text-ink-400">
-        <div className="size-8 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-500" />
-        <p className="font-mono text-xs uppercase tracking-wider">
-          {status ?? "loading"}
-        </p>
-        <p className="max-w-xs text-center text-xs text-ink-500">
-          Polling manifest.json. The splat will load as soon as the pipeline
-          flips to ready.
-        </p>
+    <div className="flex h-full w-full items-center justify-center p-6">
+      <div className="flex w-full max-w-md flex-col items-stretch gap-4">
+        <div className="flex items-center gap-3 text-ink-400">
+          <div
+            className={[
+              "size-3 rounded-full",
+              failed
+                ? "bg-red-400"
+                : "animate-[pulse_900ms_ease-in-out_infinite] bg-accent-500",
+            ].join(" ")}
+          />
+          <p className="font-mono text-xs uppercase tracking-wider">
+            {failed ? "pipeline failed" : "running pipeline"}
+          </p>
+        </div>
+        {manifest && <PipelineProgress manifest={manifest} />}
+        {failed && manifest?.errors?.length ? (
+          <pre className="max-h-32 overflow-auto rounded-md border border-red-500/40 bg-red-500/10 p-3 text-[11px] text-red-200">
+            {manifest.errors[manifest.errors.length - 1]}
+          </pre>
+        ) : (
+          <p className="text-center text-xs text-ink-500">
+            The splat will appear as soon as the splat stage completes —
+            segmentation continues in the background.
+          </p>
+        )}
       </div>
+    </div>
+  );
+}
+
+function SegmentingBanner({ status }: { status: StageStatus }) {
+  const label =
+    status === "running"
+      ? "Segmentation in progress — annotations will appear shortly."
+      : "Annotations not yet generated. Segmentation pending.";
+  return (
+    <div className="pointer-events-none absolute right-3 top-3 max-w-xs rounded-md border border-accent-500/40 bg-ink-900/80 px-3 py-2 text-xs text-ink-200 backdrop-blur">
+      <div className="flex items-center gap-2">
+        <span className="size-2 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-400" />
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+function FailedBanner({
+  title,
+  detail,
+}: {
+  title: string;
+  detail?: string;
+}) {
+  return (
+    <div className="pointer-events-none absolute right-3 top-3 max-w-xs rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-200 backdrop-blur">
+      <p className="font-medium">{title}</p>
+      {detail && <p className="mt-1 truncate text-[11px] opacity-80">{detail}</p>}
     </div>
   );
 }

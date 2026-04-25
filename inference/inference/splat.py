@@ -121,18 +121,27 @@ def _stream_with_milestones(cmd: list[str], scene_id: str | None) -> int:
     return len(fired)
 
 
-def _fallback_to_points(out_ply: Path, points_ply: Path | None, reason: str) -> int:
+def _fallback_to_points(
+    out_ply: Path,
+    points_ply: Path | None,
+    reason: str,
+    *,
+    frames_dir: Path | None = None,
+    cameras_json: Path | None = None,
+) -> int:
     """Degrade to a point-cloud-derived synthetic Gaussian splat.
 
     3DGRUT has heavy runtime deps and integration gaps that aren't worth blocking
     a demo on. Instead, when 3DGRUT can't run, we synthesize a Gaussian-splat PLY
-    from VGGT's seed points: each point becomes a small isotropic Gaussian.
+    from VGGT's seed points: each point becomes an isotropic Gaussian.
+
+    For each point we project into every keyframe and take the median pixel
+    color across the frames where it lands inside the image — this turns the
+    cloud from invisible-mid-gray into something that actually shows the scene.
+
     Output schema matches the inria 3DGS / supersplat conventions:
       x, y, z, scale_0..2 (log-scale), rot_0..3 (quat wxyz, identity),
-      f_dc_0..2 (color DC, decoded as (sh - 0.5) / 0.282), opacity (logit).
-
-    The result IS a valid Gaussian splat — just one without iterative training.
-    Looks like a denser-than-3DGS point cloud in the viewer, but loads cleanly.
+      f_dc_0..2 (color DC, decoded as (rgb - 0.5) / 0.282), opacity (logit).
     """
     if not (points_ply and points_ply.exists()):
         out_ply.write_bytes(_gaussian_ply_header(0))
@@ -144,18 +153,19 @@ def _fallback_to_points(out_ply: Path, points_ply: Path | None, reason: str) -> 
     pts = _read_xyz_ply(points_ply)
     n = len(pts)
     # Synthetic Gaussian params:
-    # - log-scale = ln(0.01) ≈ -4.6, isotropic small radius
+    # - log-scale = ln(0.03) ≈ -3.5, ~3cm radius (visible at typical viewer distance)
     # - identity quaternion (w=1, x=y=z=0)
-    # - mid-gray color (f_dc encodes (rgb - 0.5) * sh_const_inv where sh_const = 0.282)
     # - opacity logit ≈ 4 (sigmoid → 0.98)
-    log_scale = float(np.log(0.01))
+    log_scale = float(np.log(0.03))
     sh_const_inv = 1.0 / 0.282094791  # 1 / Y_0_0 in spherical harmonics
-    color_dc = (0.5 - 0.5) * sh_const_inv  # 0 → mid-gray; can be replaced with real colors later
     opacity_logit = 4.0
+
+    rgb = _sample_colors_from_frames(pts, frames_dir, cameras_json)
+    # f_dc encodes (rgb - 0.5) * sh_const_inv, with rgb in [0,1].
+    color_dc = (rgb - 0.5) * sh_const_inv
 
     out_ply.write_bytes(_gaussian_ply_header(n))
     with out_ply.open("ab") as f:
-        # Each row: 3 (xyz) + 3 (scale) + 4 (rot) + 3 (f_dc) + 1 (opacity) = 14 floats
         rows = np.empty((n, 14), dtype=np.float32)
         rows[:, 0:3] = pts
         rows[:, 3:6] = log_scale
@@ -165,8 +175,72 @@ def _fallback_to_points(out_ply: Path, points_ply: Path | None, reason: str) -> 
         rows[:, 13] = opacity_logit
         f.write(rows.tobytes(order="C"))
 
-    print(f"splat: 3DGRUT unavailable ({reason}). Wrote {n} synthetic gaussians -> {out_ply.name}")
+    print(
+        f"splat: 3DGRUT unavailable ({reason}). Wrote {n} synthetic gaussians "
+        f"(scale=3cm, sampled colors) -> {out_ply.name}"
+    )
     return 0
+
+
+def _sample_colors_from_frames(pts, frames_dir, cameras_json):
+    """For each xyz point, return an (N, 3) RGB-in-[0,1] array sampled from
+    keyframes via the known cameras. Falls back to mid-gray when projection
+    inputs are missing or no frame contains the point."""
+    import numpy as np
+
+    n = len(pts)
+    fallback = np.full((n, 3), 0.5, dtype=np.float32)
+    if frames_dir is None or cameras_json is None:
+        return fallback
+    try:
+        cameras = json.loads(Path(cameras_json).read_text())
+    except Exception:
+        return fallback
+    if not cameras:
+        return fallback
+
+    try:
+        from PIL import Image
+    except Exception:
+        return fallback
+
+    homo = np.concatenate([pts, np.ones((n, 1), dtype=np.float32)], axis=1)
+    accum = np.zeros((n, 3), dtype=np.float64)
+    counts = np.zeros(n, dtype=np.int32)
+
+    # Sample at most ~12 frames evenly across the trajectory; full coverage is overkill.
+    step = max(1, len(cameras) // 12)
+    for cam in cameras[::step]:
+        try:
+            ext = np.asarray(cam["extrinsic"], dtype=np.float32)
+            intr = np.asarray(cam["intrinsic"], dtype=np.float32)
+            frame_path = frames_dir / cam["frame"]
+            if not frame_path.exists():
+                continue
+            img = np.asarray(Image.open(frame_path).convert("RGB"), dtype=np.float32) / 255.0
+        except Exception:
+            continue
+        h, w, _ = img.shape
+        cam_pts = homo @ ext.T
+        z = cam_pts[:, 2]
+        in_front = z > 1e-6
+        safe_z = np.where(in_front, z, 1.0)
+        pix = (cam_pts[:, :3] / safe_z[:, None]) @ intr.T
+        u = np.rint(pix[:, 0]).astype(np.int32)
+        v = np.rint(pix[:, 1]).astype(np.int32)
+        ok = in_front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        if not ok.any():
+            continue
+        idx = np.flatnonzero(ok)
+        accum[idx] += img[v[idx], u[idx]]
+        counts[idx] += 1
+
+    seen = counts > 0
+    if not seen.any():
+        return fallback
+    out = fallback.copy()
+    out[seen] = (accum[seen] / counts[seen, None]).astype(np.float32)
+    return out
 
 
 _GAUSSIAN_PLY_PROPS = (
@@ -223,7 +297,13 @@ def run(
     if not root.exists():
         if required:
             raise FileNotFoundError(f"3DGRUT not found at {root}.")
-        return _fallback_to_points(out_ply, points_ply, f"missing root {root}")
+        return _fallback_to_points(
+            out_ply,
+            points_ply,
+            f"missing root {root}",
+            frames_dir=frames_dir,
+            cameras_json=cameras_json,
+        )
 
     cmds = [c for c in _candidate_commands(root, frames_dir, cameras_json, out_ply, iterations) if c]
     last_err: Exception | None = None
@@ -253,4 +333,10 @@ def run(
 
     if required:
         raise RuntimeError(f"3dgrut: all candidate commands failed. Last error: {last_err}")
-    return _fallback_to_points(out_ply, points_ply, f"all commands failed: {last_err}")
+    return _fallback_to_points(
+        out_ply,
+        points_ply,
+        f"all commands failed: {last_err}",
+        frames_dir=frames_dir,
+        cameras_json=cameras_json,
+    )

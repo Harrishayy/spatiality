@@ -19,6 +19,10 @@ infer scene_id="test_scene_v0":
 segment scene_id="test_scene_v0":
     uv run python -m segmentation --scene-id {{scene_id}}
 
+# Real SAM + VLM pipeline (requires SAM weights + PYDANTIC_GATEWAY_KEY)
+segment-real scene_id="test_scene_v0" keyframes="5":
+    uv run python -m segmentation --scene-id {{scene_id}} --real --keyframes {{keyframes}}
+
 # Round-trip every JSON/YAML artifact through pydantic
 check scene_id="test_scene_v0":
     uv run python shared/scripts/validate.py artifacts/scenes/{{scene_id}}
@@ -38,7 +42,7 @@ bundle video="":
 # Push (or version) the bundle as a Kaggle dataset. Heavy upload (~6GB).
 push-bundle:
     cd bundle && \
-      if kaggle datasets list --mine 2>/dev/null | grep -q glasses-twin-bundle; then \
+      if kaggle datasets list --mine 2>/dev/null | grep -q harrishayy21/glasses-twin-bundle; then \
         kaggle datasets version -p . -m "rebuild $(date +%Y-%m-%dT%H:%M)" --dir-mode zip; \
       else \
         kaggle datasets create -p . --dir-mode zip; \
@@ -52,7 +56,7 @@ push-kernel:
 run-kernel:
     @echo "polling kaggle kernels status (Ctrl-C to detach)…"
     @while true; do \
-      status=$$(kaggle kernels status harrishayyanar/glasses-twin-run 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"'); \
+      status=$$(kaggle kernels status harrishayy21/glasses-twin-run 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"'); \
       echo "$$(date +%H:%M:%S)  $$status"; \
       case "$$status" in \
         complete) break;; \
@@ -61,7 +65,7 @@ run-kernel:
       sleep 15; \
     done
     mkdir -p output
-    kaggle kernels output harrishayyanar/glasses-twin-run -p output/
+    kaggle kernels output harrishayy21/glasses-twin-run -p output/
 
 # Build, push, run, pull — the whole loop. Heavy.
 kaggle-loop: bundle push-bundle push-kernel run-kernel

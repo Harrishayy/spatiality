@@ -6,6 +6,12 @@ requires-python = ">=3.11"
 dependencies = [
     "shared",
     "logfire>=0.50",
+    "anthropic>=0.39",            # VLM labeling via Pydantic AI Gateway
+    "plyfile>=1.0",                # read splat.ply Gaussian centers
+    "scikit-learn>=1.5",           # DBSCAN clustering
+    "opencv-python-headless>=4.10",
+    "pillow>=10",
+    "numpy>=1.26",
 ]
 
 [tool.uv.sources]

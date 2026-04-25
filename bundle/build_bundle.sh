@@ -11,24 +11,38 @@ WEIGHTS_DIR="$BUNDLE_DIR/weights"
 INPUT_DIR="$BUNDLE_DIR/input"
 REPO_COPY_DIR="$BUNDLE_DIR/repo"
 
-# Match Kaggle's runtime exactly (Python 3.11, CUDA 12, manylinux x86_64)
-PYTHON_VERSION="311"
-PLATFORM="manylinux2014_x86_64"
-ABI="cp311"
+# Match Kaggle's runtime exactly. Verified 2026-04-25: Python 3.12, torch 2.10, CUDA 12.8.
+# Override via env if Kaggle bumps again: PY=313 PLATFORM=manylinux2014_x86_64 ABI=cp313 ./build_bundle.sh
+PYTHON_VERSION="${PY:-312}"
+PLATFORM="${PLATFORM:-manylinux2014_x86_64}"
+ABI="${ABI:-cp312}"
 
 echo "==> Building bundle at $BUNDLE_DIR"
 mkdir -p "$WHEELS_DIR" "$SRC_DIR" "$WEIGHTS_DIR" "$INPUT_DIR" "$REPO_COPY_DIR"
 
 # ── 1. Wheels ─────────────────────────────────────────────────────────────
 echo ""
-echo "==> [1/5] Downloading wheels (uv pip download, target cp${PYTHON_VERSION} ${PLATFORM})"
-uv pip download \
-  --output-dir "$WHEELS_DIR" \
+echo "==> [1/5] Downloading wheels (pip download, target cp${PYTHON_VERSION} ${PLATFORM})"
+# Main pull: platform-constrained wheels for compiled deps. hydra-core/antlr handled
+# separately because antlr4-python3-runtime 4.9.* is sdist-only and pip refuses
+# --no-binary together with --platform.
+grep -vE '^(hydra-core|omegaconf|antlr4-python3-runtime)' "$BUNDLE_DIR/requirements.txt" \
+  > "$BUNDLE_DIR/.requirements.main.txt"
+python3 -m pip download \
+  --dest "$WHEELS_DIR" \
   --platform "$PLATFORM" \
   --python-version "$PYTHON_VERSION" \
   --implementation cp --abi "$ABI" \
-  --only-binary :all: \
-  -r "$BUNDLE_DIR/requirements.txt"
+  --only-binary=:all: \
+  -r "$BUNDLE_DIR/.requirements.main.txt"
+rm -f "$BUNDLE_DIR/.requirements.main.txt"
+
+# Pure-Python: hydra-core wheel + antlr4-python3-runtime sdist (no wheel exists for 4.9.*)
+echo "    + pure-python: hydra-core (wheel) + antlr4-python3-runtime (sdist)"
+python3 -m pip download \
+  --dest "$WHEELS_DIR" \
+  --no-deps \
+  "hydra-core==1.3.2" "omegaconf==2.3.0" "antlr4-python3-runtime==4.9.3"
 echo "    wheels: $(ls "$WHEELS_DIR" | wc -l | tr -d ' ') files"
 
 # ── 2. VGGT source ────────────────────────────────────────────────────────
@@ -37,6 +51,8 @@ echo "==> [2/5] Syncing VGGT source"
 VGGT_DIR="$SRC_DIR/vggt"
 if [ -d "$VGGT_DIR/.git" ]; then
   git -C "$VGGT_DIR" pull --ff-only
+elif [ -d "$VGGT_DIR" ] && [ -n "$(ls -A "$VGGT_DIR" 2>/dev/null)" ]; then
+  echo "    already populated (no .git from prior run); leaving as-is"
 else
   git clone --depth 1 https://github.com/facebookresearch/vggt.git "$VGGT_DIR"
 fi
@@ -48,10 +64,15 @@ echo "==> [3/5] Syncing 3DGRUT source"
 GRUT_DIR="$SRC_DIR/3dgrut"
 if [ -d "$GRUT_DIR/.git" ]; then
   git -C "$GRUT_DIR" pull --ff-only
+elif [ -d "$GRUT_DIR" ] && [ -n "$(ls -A "$GRUT_DIR" 2>/dev/null)" ]; then
+  echo "    already populated (no .git from prior run); leaving as-is"
 else
   git clone --depth 1 --recursive https://github.com/nv-tlabs/3dgrut.git "$GRUT_DIR"
 fi
 rm -rf "$GRUT_DIR/.git"
+# Cutlass docs/ contains filenames with `[` which the Kaggle web uploader rejects.
+# Header-only CUDA lib — only `include/` is used at build time.
+rm -rf "$GRUT_DIR/thirdparty/tiny-cuda-nn/dependencies/cutlass/docs"
 
 # ── 4. VGGT weights ───────────────────────────────────────────────────────
 echo ""

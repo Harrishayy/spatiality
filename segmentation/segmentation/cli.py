@@ -1,12 +1,16 @@
-"""Segmentation stub — flips segmentation stage, writes hand-crafted annotations.
+"""Segmentation CLI.
 
-TODO(swap): Session C replaces with SAM 3.1 masks + Claude Haiku VLM labeling
-(plans/modules/03_segmentation.md).
+Default: stub (hand-crafted annotations) so `just smoke` works without GPU.
+--real: SAM 3.1 masks -> DBSCAN clusters -> Claude Haiku VLM labels via
+Pydantic AI Gateway, per plans/modules/03_segmentation.md.
+
+Span names match the demo evidence table in 08_observability.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -19,6 +23,9 @@ from shared.observability import (
 )
 from shared.paths import scene_dir as _scene_dir
 from shared.schemas import Annotation, AnnotationsFile, Manifest
+
+# Default cluster color when SAM/VLM doesn't volunteer one.
+DEFAULT_COLOR = "#9ca3af"
 
 
 def _stub_annotations() -> AnnotationsFile:
@@ -52,6 +59,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="segmentation")
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--scene-dir", default=None, help="Override resolved scene dir")
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="Run real SAM + VLM pipeline. Default: stub.",
+    )
+    parser.add_argument("--keyframes", type=int, default=5)
+    parser.add_argument("--eps", type=float, default=0.15, help="DBSCAN eps (Gaussian center distance)")
+    parser.add_argument("--min-samples", type=int, default=30, help="DBSCAN min samples per cluster")
     args = parser.parse_args()
 
     configure_logfire("segmentation")
@@ -62,6 +77,34 @@ def main() -> None:
     manifest.stages.segmentation.status = "running"
     manifest.write_atomic(manifest_path)
 
+    if args.real:
+        annotations, sam_dur, vlm_dur, backend, mask_count, cluster_count = _run_real(
+            scene, args
+        )
+        backend_label = backend
+    else:
+        annotations, sam_dur, vlm_dur = _run_stub(scene, args)
+        backend_label = "stub"
+        mask_count = 0
+        cluster_count = len(annotations.root)
+
+    total = sam_dur + vlm_dur
+    manifest = Manifest.read(manifest_path)
+    manifest.stages.segmentation.status = "complete"
+    manifest.stages.segmentation.duration_s = round(total, 4)
+    manifest.stages.segmentation.object_count = len(annotations.root)
+    manifest.stages.segmentation.method = backend_label
+    manifest.stats.object_count = len(annotations.root)
+    manifest.status = "ready"
+    manifest.write_atomic(manifest_path)
+    print(
+        f"segmentation {backend_label} complete: {args.scene_id} "
+        f"({total:.2f}s, {mask_count} masks -> {cluster_count} clusters -> "
+        f"{len(annotations.root)} labeled)"
+    )
+
+
+def _run_stub(scene: Path, args: argparse.Namespace) -> tuple[AnnotationsFile, float, float]:
     with logfire.span(
         SPAN_SEGMENTATION_SAM3,
         scene_id=args.scene_id,
@@ -69,7 +112,6 @@ def main() -> None:
         mask_count=0,
     ):
         t0 = time.perf_counter()
-        # TODO(swap): SAM 3.1 mask generation per keyframe.
         sam_dur = time.perf_counter() - t0
 
     annotations = _stub_annotations()
@@ -79,16 +121,66 @@ def main() -> None:
         cluster_count=len(annotations.root),
     ):
         t0 = time.perf_counter()
-        # TODO(swap): Claude Haiku VLM labeling per cluster.
+        annotations.write_atomic(scene / "annotations.json")
+        vlm_dur = time.perf_counter() - t0
+    return annotations, sam_dur, vlm_dur
+
+
+def _run_real(
+    scene: Path, args: argparse.Namespace
+) -> tuple[AnnotationsFile, float, float, str, int, int]:
+    # Imported lazily so `--stub` runs without these heavy deps installed.
+    from . import lift as _lift
+    from . import sam as _sam
+    from . import vlm as _vlm
+
+    cameras = json.loads((scene / "cameras.json").read_text())
+    keyframe_indices = _sam.pick_keyframes(cameras, n=args.keyframes)
+
+    with logfire.span(
+        SPAN_SEGMENTATION_SAM3,
+        scene_id=args.scene_id,
+        keyframe_count=len(keyframe_indices),
+        mask_count=0,
+    ) as span:
+        t0 = time.perf_counter()
+        masks, backend = _sam.run(scene, keyframe_indices)
+        span.set_attribute("mask_count", len(masks))
+        span.set_attribute("backend", backend)
+        sam_dur = time.perf_counter() - t0
+
+    clusters = _lift.cluster(
+        scene, masks, eps=args.eps, min_samples=args.min_samples
+    )
+
+    with logfire.span(
+        SPAN_SEGMENTATION_VLM,
+        scene_id=args.scene_id,
+        cluster_count=len(clusters),
+    ):
+        t0 = time.perf_counter()
+        labels = _vlm.label_clusters(scene, clusters)
+        annotations = _to_annotations(clusters, labels)
         annotations.write_atomic(scene / "annotations.json")
         vlm_dur = time.perf_counter() - t0
 
-    total = sam_dur + vlm_dur
-    manifest = Manifest.read(manifest_path)
-    manifest.stages.segmentation.status = "complete"
-    manifest.stages.segmentation.duration_s = round(total, 4)
-    manifest.stages.segmentation.object_count = len(annotations.root)
-    manifest.stats.object_count = len(annotations.root)
-    manifest.status = "ready"
-    manifest.write_atomic(manifest_path)
-    print(f"segmentation stub complete: {args.scene_id} ({total:.3f}s, {len(annotations.root)} objects)")
+    return annotations, sam_dur, vlm_dur, backend, len(masks), len(clusters)
+
+
+def _to_annotations(clusters, labels) -> AnnotationsFile:
+    out: list[Annotation] = []
+    for c in clusters:
+        lab = labels.get(c.id)
+        out.append(
+            Annotation(
+                id=c.id,
+                label=lab.label if lab else "unknown",
+                centroid=tuple(float(v) for v in c.centroid),
+                bbox=c.bbox_3d,
+                color=DEFAULT_COLOR,
+                confidence=lab.confidence if lab else 0.0,
+                alternatives=lab.alternatives if lab else [],
+                cluster_gaussian_indices=c.gaussian_indices,
+            )
+        )
+    return AnnotationsFile(root=out)

@@ -1,0 +1,69 @@
+[
+  {
+    "id": "obj_001",
+    "label": "MacBook Air (M3)",
+    "centroid": [
+      0.42,
+      0.91,
+      -1.23
+    ],
+    "bbox": [
+      [
+        0.3,
+        0.85,
+        -1.4
+      ],
+      [
+        0.55,
+        0.95,
+        -1.1
+      ]
+    ],
+    "color": "#a8b2bd",
+    "confidence": 0.91,
+    "alternatives": [
+      "laptop",
+      "MacBook"
+    ],
+    "cluster_gaussian_indices": [
+      12,
+      45,
+      78,
+      102
+    ]
+  },
+  {
+    "id": "obj_002",
+    "label": "stack of books",
+    "centroid": [
+      -0.31,
+      0.88,
+      -1.5
+    ],
+    "bbox": [
+      [
+        -0.42,
+        0.8,
+        -1.62
+      ],
+      [
+        -0.2,
+        0.96,
+        -1.38
+      ]
+    ],
+    "color": "#7a5a3a",
+    "confidence": 0.83,
+    "alternatives": [
+      "books",
+      "pile of books"
+    ],
+    "cluster_gaussian_indices": [
+      201,
+      202,
+      215,
+      233,
+      244
+    ]
+  }
+]

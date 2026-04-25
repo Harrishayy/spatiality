@@ -1,0 +1,13 @@
+{
+  "id": "harrishayyanar/glasses-twin-run",
+  "title": "glasses-twin-run",
+  "code_file": "main.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": false,
+  "dataset_sources": ["harrishayyanar/glasses-twin-bundle"],
+  "competition_sources": [],
+  "kernel_sources": []
+}

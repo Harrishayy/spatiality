@@ -1,0 +1,11 @@
+scene_id: test_scene_v0
+source_video: samples/test_scene.mp4
+duration_s: 0.0
+fps: 2.0
+frame_count: 0
+resolution:
+- 1920
+- 1080
+camera_model: pinhole
+fov_deg: null
+captured_at: '2026-04-25T11:41:51.100837Z'

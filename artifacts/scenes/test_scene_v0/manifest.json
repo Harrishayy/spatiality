@@ -1,0 +1,38 @@
+{
+  "scene_id": "test_scene_v0",
+  "created_at": "2026-04-25T14:23:11Z",
+  "status": "ready",
+  "stages": {
+    "capture": {
+      "status": "complete",
+      "duration_s": 0.0006
+    },
+    "poses": {
+      "status": "complete",
+      "duration_s": 0.0001,
+      "method": "stub"
+    },
+    "splat": {
+      "status": "complete",
+      "duration_s": 0.0,
+      "iterations": 0
+    },
+    "segmentation": {
+      "status": "complete",
+      "duration_s": 0.0002,
+      "object_count": 2
+    }
+  },
+  "artifacts": {
+    "splat_ply": "/artifacts/scenes/test_scene_v0/splat.ply",
+    "annotations_json": "/artifacts/scenes/test_scene_v0/annotations.json",
+    "thumbnail_jpg": "/artifacts/scenes/test_scene_v0/thumbnail.jpg",
+    "cameras_json": "/artifacts/scenes/test_scene_v0/cameras.json"
+  },
+  "stats": {
+    "frame_count": 0,
+    "object_count": 2,
+    "splat_size_mb": 0.0
+  },
+  "errors": []
+}

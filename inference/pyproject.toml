@@ -1,0 +1,19 @@
+[project]
+name = "inference"
+version = "0.0.1"
+description = "Inference module — frames to splat (VGGT + 3DGRUT). Stub in Session A."
+requires-python = ">=3.11"
+dependencies = [
+    "shared",
+    "logfire>=0.50",
+]
+
+[tool.uv.sources]
+shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["inference"]

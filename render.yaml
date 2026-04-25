@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: glasses-twin-agent
+    runtime: node
+    plan: starter   # $7/mo so the service doesn't sleep mid-demo
+    buildCommand: pnpm install && pnpm --filter agent build
+    startCommand: pnpm --filter agent start
+    rootDir: .
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PYDANTIC_GATEWAY_URL
+        sync: false
+      - key: PYDANTIC_GATEWAY_KEY
+        sync: false
+      - key: LOGFIRE_TOKEN
+        sync: false
+      - key: MODAL_INFERENCE_URL
+        sync: false
+      - key: ARTIFACTS_PATH
+        value: /var/data/artifacts
+    disk:
+      name: artifacts
+      mountPath: /var/data/artifacts
+      sizeGB: 10
+
+  - type: web
+    name: glasses-twin-web
+    runtime: static
+    buildCommand: pnpm install && pnpm --filter web build
+    staticPublishPath: ./web/dist
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: VITE_AGENT_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

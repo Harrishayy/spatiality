@@ -1,8 +1,8 @@
 """Segmentation CLI.
 
 Default: stub (hand-crafted annotations) so `just smoke` works without GPU.
---real: SAM 3.1 masks -> DBSCAN clusters -> Claude Haiku VLM labels via
-Pydantic AI Gateway, per plans/modules/03_segmentation.md.
+--real: VLM proposer + SAM 3.1 masks (parallel) -> Jaccard-merged 3D clusters
+-> Claude Haiku VLM labeler, per plans/modules/03_segmentation.md.
 
 Span names match the demo evidence table in 08_observability.md.
 """
@@ -10,6 +10,7 @@ Span names match the demo evidence table in 08_observability.md.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -19,6 +20,8 @@ import logfire
 from shared.observability import (
     SPAN_SEGMENTATION_SAM3,
     SPAN_SEGMENTATION_VLM,
+    SPAN_SEGMENTATION_VLM_PROPOSAL,
+    attach_payload,
     configure_logfire,
 )
 from shared.paths import scene_dir as _scene_dir
@@ -64,7 +67,7 @@ def main() -> None:
         action="store_true",
         help="Run real SAM + VLM pipeline. Default: stub.",
     )
-    parser.add_argument("--keyframes", type=int, default=5)
+    parser.add_argument("--keyframes", type=int, default=12)
     parser.add_argument(
         "--lift-mode",
         choices=["masks", "dbscan"],
@@ -80,7 +83,19 @@ def main() -> None:
         default=0.30,
         help="Mask-merge threshold (masks mode only)",
     )
+    parser.add_argument(
+        "--no-vlm-proposals",
+        action="store_true",
+        help="Disable the parallel VLM proposer (Source A). Falls back to SAM-only.",
+    )
+    parser.add_argument(
+        "--no-sam",
+        action="store_true",
+        help="Disable SAM 3.1 (Source B). Falls back to VLM-proposals-only.",
+    )
     args = parser.parse_args()
+    if args.no_vlm_proposals and args.no_sam:
+        parser.error("--no-vlm-proposals and --no-sam together leave no annotation source")
 
     configure_logfire("segmentation")
     scene = Path(args.scene_dir) if args.scene_dir else _scene_dir(args.scene_id)
@@ -139,6 +154,51 @@ def _run_stub(scene: Path, args: argparse.Namespace) -> tuple[AnnotationsFile, f
     return annotations, sam_dur, vlm_dur
 
 
+async def _gather_sources(
+    scene: Path, keyframe_indices: list[int], args: argparse.Namespace
+):
+    """Run SAM (in a worker thread) and the VLM proposer (async) concurrently.
+
+    Returns (sam_masks, sam_backend, vlm_proposals).
+    """
+    from . import sam as _sam
+
+    sam_coro = (
+        asyncio.to_thread(_sam.run, scene, keyframe_indices)
+        if not args.no_sam
+        else _empty_sam()
+    )
+    if args.no_vlm_proposals:
+        vlm_coro = _empty_vlm()
+    else:
+        from . import proposer as _proposer
+
+        vlm_coro = _wrap_vlm_proposals(_proposer.propose(scene, keyframe_indices))
+
+    (sam_masks, sam_backend), vlm_proposals = await asyncio.gather(sam_coro, vlm_coro)
+    return sam_masks, sam_backend, vlm_proposals
+
+
+async def _empty_sam():
+    return [], "skipped"
+
+
+async def _empty_vlm():
+    return []
+
+
+async def _wrap_vlm_proposals(coro):
+    """Logfire span around the proposer + tolerant return on failure."""
+    with logfire.span(SPAN_SEGMENTATION_VLM_PROPOSAL) as span:
+        try:
+            proposals = await coro
+        except Exception as e:
+            span.set_attribute("error", str(e)[:200])
+            return []
+        span.set_attribute("proposal_count", len(proposals))
+        return proposals
+
+
 def _run_real(
     scene: Path, args: argparse.Namespace
 ) -> tuple[AnnotationsFile, float, float, str, int, int]:
@@ -149,49 +209,92 @@ def _run_real(
     cameras = json.loads((scene / "cameras.json").read_text())
     keyframe_indices = _sam.pick_keyframes(cameras, n=args.keyframes)
 
+    t_sources_start = time.perf_counter()
+    sam_masks, backend, vlm_proposals = asyncio.run(
+        _gather_sources(scene, keyframe_indices, args)
+    )
+    sources_dur = time.perf_counter() - t_sources_start
+
     with logfire.span(
         SPAN_SEGMENTATION_SAM3,
         scene_id=args.scene_id,
         keyframe_count=len(keyframe_indices),
-        mask_count=0,
-    ) as span:
-        t0 = time.perf_counter()
-        masks, backend = _sam.run(scene, keyframe_indices)
-        span.set_attribute("mask_count", len(masks))
-        span.set_attribute("backend", backend)
-        sam_dur = time.perf_counter() - t0
+        mask_count=len(sam_masks),
+        backend=backend,
+    ):
+        pass  # detail spans live inside sam.run / proposer.propose
 
     if args.lift_mode == "masks":
         from . import lift_masks as _lift_masks
 
+        vlm_masks = _lift_masks.proposals_to_masks(vlm_proposals, scene)
         clusters = _lift_masks.cluster_via_masks(
-            scene, masks, jaccard_min=args.jaccard_min
+            scene, sam_masks + vlm_masks, jaccard_min=args.jaccard_min
         )
     else:
         from . import lift as _lift
 
+        # DBSCAN path is SAM-only legacy; VLM proposals are ignored.
         clusters = _lift.cluster(
-            scene, masks, eps=args.eps, min_samples=args.min_samples
+            scene, sam_masks, eps=args.eps, min_samples=args.min_samples
         )
 
     with logfire.span(
         SPAN_SEGMENTATION_VLM,
         scene_id=args.scene_id,
         cluster_count=len(clusters),
-    ):
+    ) as vlm_span:
         t0 = time.perf_counter()
         labels = _vlm.label_clusters(scene, clusters)
         annotations = _to_annotations(clusters, labels)
         annotations.write_atomic(scene / "annotations.json")
         vlm_dur = time.perf_counter() - t0
+        # Final, post-filter inventory so the demo's evidence span carries the
+        # actual labelled objects (after duplicate / "none" rejection).
+        attach_payload(
+            vlm_span,
+            "annotations",
+            [
+                {
+                    "id": a.id,
+                    "label": a.label,
+                    "confidence": a.confidence,
+                    "alternatives": a.alternatives,
+                    "provenance": list(a.provenance),
+                }
+                for a in annotations.root
+            ],
+        )
+        vlm_span.set_attribute("annotation_count", len(annotations.root))
 
-    return annotations, sam_dur, vlm_dur, backend, len(masks), len(clusters)
+    total_mask_count = len(sam_masks) + (
+        len(vlm_proposals) if args.lift_mode == "masks" else 0
+    )
+    return (
+        annotations,
+        sources_dur,
+        vlm_dur,
+        backend,
+        total_mask_count,
+        len(clusters),
+    )
 
 
 def _to_annotations(clusters, labels) -> AnnotationsFile:
+    """Build AnnotationsFile, dropping VLM-rejected clusters and duplicates.
+
+    A cluster is dropped when:
+      - label == "none" (proposer/labeler rejected the crop), or
+      - alternatives[0] starts with "duplicate_of:" (canonical kept elsewhere).
+    """
     out: list[Annotation] = []
     for c in clusters:
         lab = labels.get(c.id)
+        if lab is not None:
+            if lab.label.strip().lower() == "none":
+                continue
+            if lab.alternatives and str(lab.alternatives[0]).startswith("duplicate_of:"):
+                continue
         out.append(
             Annotation(
                 id=c.id,
@@ -202,6 +305,7 @@ def _to_annotations(clusters, labels) -> AnnotationsFile:
                 confidence=lab.confidence if lab else 0.0,
                 alternatives=lab.alternatives if lab else [],
                 cluster_gaussian_indices=c.gaussian_indices,
+                provenance=list(c.sources),
             )
         )
     return AnnotationsFile(root=out)

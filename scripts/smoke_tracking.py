@@ -5,7 +5,7 @@ What this exercises:
   2. Anthropic SDK -> Pydantic AI Gateway (auth_token Bearer, EU base URL)
   3. Nested logfire.span structure mirroring real pipeline traces
   4. Milestone event (logfire.info) inside the inner span — same pattern
-     08_observability.md prescribes for `inference.3dgrut`
+     08_observability.md prescribes for `inference.splat`
   5. Confirms the response carries cost/token metadata Gateway attaches
 
 Run:
@@ -113,7 +113,7 @@ def smoke_one_call(client: Anthropic) -> dict:
         cluster_count=1,
     ) as span:
         t0 = time.perf_counter()
-        # Milestone event — same pattern as 3dgrut iteration markers.
+        # Milestone event — same pattern as the inference.splat stage marker.
         logfire.info("vlm_call_start", model="claude-haiku-4-5", batch_size=1)
         resp = client.messages.create(
             model="claude-haiku-4-5",

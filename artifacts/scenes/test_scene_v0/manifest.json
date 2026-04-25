@@ -5,17 +5,18 @@
   "stages": {
     "capture": {
       "status": "complete",
-      "duration_s": 8.0
+      "duration_s": 0.0007
     },
     "poses": {
       "status": "complete",
-      "duration_s": 0.0006,
+      "duration_s": 0.0002,
       "method": "stub"
     },
     "splat": {
       "status": "complete",
-      "duration_s": 0.0003,
-      "iterations": 0
+      "duration_s": 0.0001,
+      "iterations": 0,
+      "method": "stub"
     },
     "segmentation": {
       "status": "complete",

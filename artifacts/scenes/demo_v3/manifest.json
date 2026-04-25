@@ -1,0 +1,35 @@
+{
+  "scene_id": "demo_v3",
+  "created_at": "2026-04-25T16:19:10.047836Z",
+  "status": "queued",
+  "stages": {
+    "capture": {
+      "status": "complete",
+      "duration_s": 4.193
+    },
+    "poses": {
+      "status": "pending",
+      "duration_s": null
+    },
+    "splat": {
+      "status": "pending",
+      "duration_s": null
+    },
+    "segmentation": {
+      "status": "pending",
+      "duration_s": null
+    }
+  },
+  "artifacts": {
+    "splat_ply": "/artifacts/scenes/demo_v3/splat.ply",
+    "annotations_json": "/artifacts/scenes/demo_v3/annotations.json",
+    "thumbnail_jpg": "/artifacts/scenes/demo_v3/thumbnail.jpg",
+    "cameras_json": "/artifacts/scenes/demo_v3/cameras.json"
+  },
+  "stats": {
+    "frame_count": 60,
+    "object_count": 0,
+    "splat_size_mb": 0.0
+  },
+  "errors": []
+}

@@ -13,6 +13,7 @@ export interface Annotation {
   confidence: number;
   alternatives: string[];
   cluster_gaussian_indices: number[];
+  provenance?: string[];
 }
 
 export type AnnotationsFile = Annotation[];

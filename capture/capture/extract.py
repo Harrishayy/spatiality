@@ -57,7 +57,7 @@ def _parse_fps(rate: str) -> float:
 def extract(
     video: Path,
     out_frames: Path,
-    fps: float = 2.0,
+    fps: float = 4.0,
     max_frames: int | None = 400,
     target_long_side: int = 1920,
 ) -> tuple[int, dict]:

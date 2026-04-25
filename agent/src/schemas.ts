@@ -1,0 +1,33 @@
+import { z } from "zod";
+
+export const Settings = z.object({
+  fps: z.number().min(0.5).max(10).default(2.0),
+  max_frames: z.number().int().min(10).max(800).default(400),
+  target_long_side: z.number().int().min(480).max(3840).default(1920),
+  segment: z.boolean().default(true),
+  keyframes: z.number().int().min(2).max(30).default(5),
+});
+export type Settings = z.infer<typeof Settings>;
+
+export const InitUploadBody = z.object({
+  filename: z.string().min(1).max(256),
+  content_type: z.string().min(3).max(128),
+  size_bytes: z.number().int().min(1).max(2_000_000_000),
+});
+export type InitUploadBody = z.infer<typeof InitUploadBody>;
+
+export const SubmitJobBody = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("r2"),
+    scene_id: z.string().min(1),
+    r2_key: z.string().min(1),
+    settings: Settings,
+  }),
+  z.object({
+    mode: z.literal("local"),
+    scene_id: z.string().min(1),
+    modal_path: z.string().min(1),
+    settings: Settings,
+  }),
+]);
+export type SubmitJobBody = z.infer<typeof SubmitJobBody>;

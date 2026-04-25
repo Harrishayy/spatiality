@@ -1,78 +1,80 @@
 # Module 02 — Inference (the critical path)
 
 ## Goal
-Take a directory of frames (from **any** video source — Ray-Ban, phone, GoPro, screen recording, drone) and produce a Gaussian splat, an extracted point cloud, and camera poses. Two run modes share the same CLI: a Kaggle-bundled offline path for early testing, and a Modal/Brev online path for the demo.
+Take a directory of frames (from any video source — Ray-Ban, phone, GoPro, drone) and produce a Gaussian splat + camera poses in **<15 s on a Modal A100-80GB**, no per-scene optimisation. Output is consumable by the web viewer (Spark / `@sparkjsdev/spark`) without conversion.
 
-The pipeline reads `camera_model` from `capture.yaml` and selects the appropriate 3DGRUT projection. If `camera_model: generic`, VGGT estimates intrinsics and 3DGRUT runs in pinhole mode — slightly worse quality than a correct preset but robust to any input.
+The splat step is **feed-forward**: VGGT's depth + camera heads give us per-pixel world points; we wrap each pixel as an oriented anisotropic Gaussian (a "surfel"), voxel-downsample to remove cross-frame redundancy, and write the standard INRIA-layout PLY. There is no gsplat / 3DGRUT / NeRF training in the loop — that path was removed because it took ~90 s on A100 and produced visibly worse output than the surfel synthesis.
 
 ## Inputs
-- `artifacts/scenes/<scene_id>/frames/`
+- `artifacts/scenes/<scene_id>/frames/` — extracted by the capture stage
 - `artifacts/scenes/<scene_id>/capture.yaml`
 
 ## Outputs
-- `splat.ply` — full Gaussian splat (training output of 3DGRUT)
-- `points.ply` — extracted Gaussian centers as point cloud (for downstream segmentation use)
-- `cameras.json` — per-frame camera poses + intrinsics in 3DGRUT-native format
-- `inference.yaml`:
-  ```yaml
-  splat_method: 3dgrut
-  pose_method: vggt
-  iterations: 7000
-  gpu: rtx_pro_6000
-  duration_s: 142
-  cost_usd: 0.42
-  ```
+- `cameras.json` — list of `{frame, extrinsic 4x4, intrinsic 3x3}` (OpenCV camera-from-world). Written by the poses stage.
+- `points.ply` — binary little-endian, fields `x y z (float32)  red green blue (uchar)  confidence (float32)`. Public artifact for visual debugging; the splat stage doesn't read it.
+- `surfels.npz` — per-pixel surfel arrays (`xyz`, `f_dc`, `opacity`, `log_scale`, `quat`, `conf`). Internal handoff between the poses and splat stages.
+- `splat.ply` — binary little-endian INRIA layout (`x y z nx ny nz f_dc_0..2 opacity scale_0..2 rot_0..3`). Consumed unchanged by `web/app/components/SplatViewer.tsx`.
 
 ## Tech
-- **Pose estimation:** VGGT ([github.com/facebookresearch/vggt](https://github.com/facebookresearch/vggt)) — feed-forward, ~0.2s for sparse views. Subsamples ~12 keyframes from the 60-frame input.
-- **Splat training:** 3DGRUT ([github.com/nv-tlabs/3dgrut](https://github.com/nv-tlabs/3dgrut)) — handles Ray-Ban's wide-angle camera natively via ray tracing.
-- **GPU host:** Modal (primary) or Brev (backup). Kaggle for the early test bundle.
-- **Wrapper CLI:** `python inference/train.py --scene <scene_id> [--iterations 7000]`. Same CLI on every backend; the backend is selected by env var (`INFERENCE_BACKEND=modal|kaggle|local`).
+- **Pose + depth estimation:** VGGT-1B ([github.com/facebookresearch/vggt](https://github.com/facebookresearch/vggt)) — feed-forward, per-pixel depth + per-image camera + per-pixel confidence. Runs in bf16 autocast under `torch.cuda.amp.autocast`.
+- **Surfel synthesis:** NumPy-only. Per pixel: unproject depth → world point; tangent scale = `depth / focal`; normal scale = `0.3 × tangent` (flat surfel); rotation from depth-gradient normal; opacity = `logit(clip(conf, 0.1, 0.99))`; SH DC band = `(rgb - 0.5) / SH_C0`.
+- **Voxel downsample:** Pure NumPy hash-grid over `np.floor(p / voxel_size)`. Keeps the highest-confidence surfel per voxel. ~100ms at 8M points.
+- **GPU host:** Modal A100-80GB. Headroom is what lets us feed up to 48 frames into the O(N²) cross-attention.
 
-## Two run modes
+## Pipeline shape
 
-### Kaggle offline (early testing, hours 1–3)
-- Bundle: `bundle/wheels/`, `bundle/src/vggt/`, `bundle/src/3dgrut/`, `bundle/weights/vggt.pt`.
-- Notebook installs from bundle, runs CLI, writes outputs to a Kaggle output dataset.
-- Push/pull driven by `kaggle` CLI from laptop (Claude Code can drive this loop).
-- See [`09_deployment.md`](./09_deployment.md) for the bundle build script.
+```
+frames/         capture.yaml
+   │                │
+   ▼                ▼
+┌─────────────────────────────┐
+│  poses.py (stage: poses)    │      VGGT forward pass + per-pixel
+│  ─────────────────────────  │  ──> surfel construction. Persists
+│  bf16 autocast on A100-80GB │      cameras.json, points.ply,
+└─────────────────────────────┘      surfels.npz.
+              │
+              ▼
+┌─────────────────────────────┐
+│  splat.py (stage: splat)    │      Voxel-downsample surfels.npz to
+│  ─────────────────────────  │  ──> ~1–2M Gaussians. Writes splat.ply
+│  CPU-only, NumPy            │      in INRIA layout.
+└─────────────────────────────┘
+```
 
-### Modal online (production demo, hours 3+)
-- `modal_app.py` defines a function `run_inference(scene_dir: str)` with `@app.function(gpu="A100", timeout=600)`.
-- Image: `modal.Image.debian_slim().apt_install("git", "build-essential").pip_install_from_requirements("requirements-gpu.txt")`.
-- Bind a Modal Volume for `artifacts/`. Web app calls into Modal via `modal.Function.lookup("splat-inference", "run_inference").remote(scene_id)`.
-- Cold start ~30s, warm start ~5s. Keep the function warm during demo via a 60s ping cron.
+The two stages are separate subprocess calls in `inference/modal_app.py` so the volume can be committed between them (the web sees `cameras.json` immediately after poses finishes, then `splat.ply` after the splat stage). Both stages run on the same A100-80GB function — the splat stage is CPU-bound but co-locating avoids the volume round-trip.
 
-## Implementation steps
+## Knobs (env vars; defaults in `inference/modal_app.py:COMMON_ENV`)
 
-1. **Hour 1:** scaffold `inference/train.py` with a stub that copies a prebaked `samples/test_scene.ply` to `splat.ply`. Downstream modules can develop against this.
-2. **Hour 1.5:** wire VGGT — clone repo, write `inference/poses.py` that takes `frames/` and writes `cameras.json` + `points.ply`. Smoke-test on `samples/`.
-3. **Hour 2:** wire 3DGRUT — clone repo, write `inference/splat.py` that takes `frames/` + `cameras.json` and writes `splat.ply`. Smoke-test, expect compile pain.
-4. **Hour 2.5:** Kaggle bundle path — pre-download wheels, package source, push as dataset, run a smoke notebook end-to-end.
-5. **Hour 3–4:** Modal app — write `modal_app.py`, deploy, smoke-test from laptop with `modal run`.
-6. **Hour 4–5:** integrate into orchestrator — agent backend triggers Modal job, polls for completion, updates `manifest.json`.
-7. **Hour 5+:** tune iterations for quality vs speed. Target: 5 min total wall clock from upload to splat available.
+| Var | Default | Purpose |
+|---|---|---|
+| `VGGT_FRAMES_MAX` | `48` | Cap on frames fed to VGGT (compute is O(N²); quality saturates at 16–32). |
+| `VGGT_FRAMES_MIN` | `8` | Floor — never starve VGGT after blur filtering. |
+| `VGGT_FPS_TARGET` | `4.0` | Target sampling rate before blur filter (best-effort, by stride). |
+| `VGGT_BLUR_DROP_PCT` | `0.20` | Drop bottom percentile by Laplacian variance — kills motion-blur frames. |
+| `VGGT_DEPTH_CONF_MIN` | `0.2` | Per-pixel confidence floor; pixels below are dropped before surfel synth. |
+| `VGGT_DEPTH_GRAD_MAX` | `0.05` | Relative depth-gradient max — drops silhouette-edge pixels (otherwise floaters). |
+| `VGGT_VOXEL_SIZE_FRAC` | `0.005` | Voxel size as fraction of scene diagonal — controls splat count vs detail. |
 
-## Speed tuning
-Default 3DGRUT trains for ~30k iterations. For the 5-min demo target:
-- 7,000 iterations on an A100 ≈ 90s training time.
-- 3,000 iterations ≈ 40s training time, viewable but rough.
-- **Strategy:** train at 3,000 iterations first, expose splat to the viewer ASAP, continue training in background and stream updates. Splat file format supports this — viewer can hot-reload.
+## Implementation notes
+- `poses.py:_select_frames` does the pre-filter (stride → blur scoring → cap → spacing-preserving truncation).
+- `poses.py:_load_raw_rgb` deliberately reloads via PIL so we have un-normalised RGB for color sampling — VGGT's preprocess applies ImageNet normalisation.
+- `poses.py:_basis_to_quat_wxyz` is Shepperd's method, vectorised across all kept pixels. The output quaternion order is **wxyz** (matches the existing INRIA-layout writer and the Spark viewer's decode).
+- `splat.py:_voxel_downsample` uses an int64-packed voxel hash so we don't pay for tuple-keyed dicts. The per-voxel argmax loop is the only Python-level cost; vectorising via `np.maximum.at` would require sentinel handling that costs more than the loop saves at our point counts.
 
 ## Acceptance criteria
-- Wall clock from `frames/` ready to `splat.ply` written: ≤ 3 minutes on Modal A100.
-- `cameras.json` parseable by 3DGRUT viewer.
-- `splat.ply` opens in [SuperSplat](https://playcanvas.com/supersplat/editor) without errors.
+- Wall clock from `frames/` ready to `splat.ply` written: **≤ 15 s on Modal A100-80GB** (typical: VGGT ~2–4s, surfel synth ~1s, voxel downsample <1s).
+- `cameras.json` parseable by Spark (already used unchanged).
+- `splat.ply` opens in [SuperSplat](https://playcanvas.com/supersplat/editor) without errors and renders as oriented surface patches (not isotropic blobs).
 
 ## Failure paths
-- **VGGT poses garbage:** detect via reprojection error; fall back to COLMAP via `ns-process-data` (adds ~90s).
-- **3DGRUT compile fails on Modal:** fall back to Splatfacto via Nerfstudio image. Lose Ray-Ban quality but keep pipeline.
-- **Modal cold start too slow:** pre-warm by triggering one inference at hour 17 before demo.
+- **VGGT depth degenerate** (zero surfels survive the conf gate): raise. Check input frames + weights; the floor at `VGGT_FRAMES_MIN=8` post-filter is the upstream guard.
+- **VGGT model output missing `depth` / `depth_conf`**: raise with a clear message — this build of VGGT doesn't expose the depth head (extremely unlikely with `facebook/VGGT-1B`).
+- **All pixels dropped at silhouettes**: lower `VGGT_DEPTH_GRAD_MAX` or accept floaters. The current default trades a few floaters for completeness.
 
 ## Out of scope
-- Mesh extraction (semantic replacement is the path for Gazebo, not a real mesh).
+- Mesh extraction.
 - Per-object splats (see [`04_object_isolation.md`](./04_object_isolation.md)).
-- Multi-scene compositing.
+- View-dependent shading (SH degree > 0). Surfel synthesis is degree 0 by design; higher bands would require per-scene fitting, which is the path we removed.
 
 ## Cost target
-≤ $0.50 per scene on Modal A100. ≤ $5 total inference spend across all dev runs.
+A100-80GB at ~$3.10/hr × 15s ≈ **$0.013 per scene**. Total inference spend across all dev runs <<$5.

@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@mkkellogg/gaussian-splats-3d':
-        specifier: ^0.4.7
-        version: 0.4.7(three@0.169.0)
+      '@sparkjsdev/spark':
+        specifier: 0.1.10
+        version: 0.1.10
       '@tanstack/react-query':
         specifier: ^5.62.7
         version: 5.100.3(react@18.3.1)
@@ -214,11 +214,6 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@mkkellogg/gaussian-splats-3d@0.4.7':
-    resolution: {integrity: sha512-0vy9/i9sJLFH/v3WJZ4axCsqjkToe8UsV3xY7bvK5EUC0akiRsWZODoCiSzpxhTLNyzSKTsyQKozIFeNA5RWRA==}
-    peerDependencies:
-      three: '>=0.160.0'
-
   '@next/env@16.2.4':
     resolution: {integrity: sha512-dKkkOzOSwFYe5RX6y26fZgkSpVAlIOJKQHIiydQcrWH6y/97+RceSOAdjZ14Qa3zLduVUy0TXcn+EiM6t4rPgw==}
 
@@ -281,6 +276,9 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@sparkjsdev/spark@0.1.10':
+    resolution: {integrity: sha512-CiijdZQuj7KPDUqIZPiEqyUkJCYo1JqR05vq/V+ElxMwqR7L70ZuZDyIKcasjZHSiPB8pGRMH8HZGqUKO9aRPQ==}
 
   '@swc/helpers@0.5.15':
     resolution: {integrity: sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==}
@@ -869,10 +867,6 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@mkkellogg/gaussian-splats-3d@0.4.7(three@0.169.0)':
-    dependencies:
-      three: 0.169.0
-
   '@next/env@16.2.4': {}
 
   '@next/swc-darwin-arm64@16.2.4':
@@ -910,6 +904,10 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
+
+  '@sparkjsdev/spark@0.1.10':
+    dependencies:
+      fflate: 0.8.2
 
   '@swc/helpers@0.5.15':
     dependencies:

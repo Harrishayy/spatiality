@@ -1,7 +1,12 @@
-"""Inference stub — flips poses + splat stages, writes empty cameras.json + ply.
+"""Inference orchestration — runs the poses + splat stages.
 
-TODO(swap): Session B replaces with VGGT poses + 3DGRUT training
-(plans/modules/02_inference.md).
+Real path: VGGT → per-pixel surfel synthesis → INRIA-format splat PLY
+(plans/modules/02_inference.md). No per-scene optimisation; all the
+geometric work happens in poses.py while the depth grid is still in
+memory, splat.py only voxel-downsamples the cached surfels.
+
+Stub path: writes empty cameras.json + empty PLYs (used for local
+dry-runs without CUDA).
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from pathlib import Path
 import logfire
 
 from shared.observability import (
-    SPAN_INFERENCE_3DGRUT,
+    SPAN_INFERENCE_SPLAT,
     SPAN_INFERENCE_VGGT,
     configure_logfire,
 )
@@ -35,14 +40,20 @@ def main() -> None:
     parser.add_argument(
         "--real",
         action="store_true",
-        help="Run real VGGT + 3DGRUT (requires bundled deps). Default: stub.",
+        help="Run real VGGT + surfel synthesis (requires CUDA + bundled deps). Default: stub.",
     )
-    parser.add_argument("--iterations", type=int, default=7000)
     parser.add_argument(
         "--stage",
         choices=["all", "poses", "splat"],
         default="all",
         help="Run a single stage (modal_app commits the volume between stages); 'all' is the legacy local path.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["vggt", "fastvggt"],
+        default="vggt",
+        help="Pose/depth backend. 'vggt' is the default; 'fastvggt' uses the "
+             "token-merging fork (mystorm16/FastVGGT) for higher frame budgets.",
     )
     args = parser.parse_args()
 
@@ -51,12 +62,15 @@ def main() -> None:
     manifest_path = scene / "manifest.json"
 
     if args.real:
-        from . import poses as _poses
+        if args.backend == "fastvggt":
+            from . import fastvggt as _poses
+        else:
+            from . import poses as _poses
         from . import splat as _splat
     else:
         _poses = _splat = None
 
-    method = "vggt" if args.real else "stub"
+    method = (f"{args.backend}-surfel") if args.real else "stub"
     gpu_label = _detect_gpu() if args.real else "stub"
     frames_dir = scene / "frames"
     frame_count = (
@@ -66,7 +80,6 @@ def main() -> None:
     )
 
     poses_dur = splat_dur = 0.0
-    iterations = args.iterations if args.real else 0
 
     if args.stage in ("all", "poses"):
         poses_dur = _run_poses(
@@ -79,6 +92,7 @@ def main() -> None:
             method=method,
             gpu_label=gpu_label,
             frame_count=frame_count,
+            backend=args.backend,
         )
 
     if args.stage in ("all", "splat"):
@@ -89,14 +103,14 @@ def main() -> None:
             scene_id=args.scene_id,
             real=args.real,
             splat_module=_splat,
-            iterations=iterations,
+            method=method,
             gpu_label=gpu_label,
             frame_count=frame_count,
         )
 
     label = "real" if args.real else "stub"
     print(
-        f"inference {label} {args.stage} complete: {args.scene_id} "
+        f"inference {label} {args.stage} ({args.backend}) complete: {args.scene_id} "
         f"(poses {poses_dur:.2f}s, splat {splat_dur:.2f}s)"
     )
 
@@ -112,6 +126,7 @@ def _run_poses(
     method: str,
     gpu_label: str,
     frame_count: int,
+    backend: str = "vggt",
 ) -> float:
     manifest = Manifest.read(manifest_path)
     manifest.stages.poses.status = "running"
@@ -125,6 +140,7 @@ def _run_poses(
         frame_count=frame_count,
         gpu=gpu_label,
         model_id=vggt_ckpt,
+        backend=backend,
     ) as span:
         t0 = time.perf_counter()
         try:
@@ -142,10 +158,12 @@ def _run_poses(
             raise
         dur = time.perf_counter() - t0
         span.set_attribute("duration_s", round(dur, 3))
+        cameras_written: int | None = None
         try:
             import json as _json
             cams = _json.loads((scene / "cameras.json").read_text())
-            span.set_attribute("cameras_written", len(cams))
+            cameras_written = len(cams)
+            span.set_attribute("cameras_written", cameras_written)
         except Exception:
             pass
 
@@ -153,6 +171,11 @@ def _run_poses(
     m.stages.poses.status = "complete"
     m.stages.poses.duration_s = round(dur, 4)
     m.stages.poses.method = method
+    # `stats.frame_count` is the on-disk capture count (may be hundreds more
+    # than VGGT actually consumed). Surface the VGGT-consumed count on the
+    # poses stage itself so the UI can show "N of M frames".
+    if cameras_written is not None:
+        m.stages.poses.frame_count = cameras_written
     m.stats.frame_count = frame_count
     m.write_atomic(manifest_path)
     return dur
@@ -166,7 +189,7 @@ def _run_splat(
     scene_id: str,
     real: bool,
     splat_module,
-    iterations: int,
+    method: str,
     gpu_label: str,
     frame_count: int,
 ) -> float:
@@ -175,22 +198,22 @@ def _run_splat(
     m.write_atomic(manifest_path)
 
     with logfire.span(
-        SPAN_INFERENCE_3DGRUT,
+        SPAN_INFERENCE_SPLAT,
         scene_id=scene_id,
-        iterations=iterations,
         gpu=gpu_label,
     ) as span:
         t0 = time.perf_counter()
+        gaussian_count: int | None = None
         try:
             if real:
-                milestones = splat_module.run(
+                result = splat_module.run(
                     frames_dir=frames_dir,
                     cameras_json=scene / "cameras.json",
                     out_ply=scene / "splat.ply",
-                    iterations=iterations,
                     scene_id=scene_id,
                 )
-                span.set_attribute("milestones_emitted", milestones)
+                span.set_attribute("gaussian_count", result["gaussian_count"])
+                gaussian_count = result["gaussian_count"]
             else:
                 _stub_ply(scene / "splat.ply")
         except Exception as exc:
@@ -211,7 +234,9 @@ def _run_splat(
     mf = Manifest.read(manifest_path)
     mf.stages.splat.status = "complete"
     mf.stages.splat.duration_s = round(dur, 4)
-    mf.stages.splat.iterations = iterations
+    mf.stages.splat.method = method
+    if gaussian_count is not None:
+        mf.stages.splat.gaussian_count = gaussian_count
     mf.stats.frame_count = frame_count
     mf.stats.splat_size_mb = round(splat_size_mb, 2)
     # splat is enough for "ready" — segmentation is optional for the demo.

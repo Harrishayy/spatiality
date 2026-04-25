@@ -1,7 +1,7 @@
 [project]
 name = "inference"
 version = "0.0.1"
-description = "Inference module — frames to splat (VGGT + 3DGRUT). Stub in Session A."
+description = "Inference module — frames to splat (VGGT depth + per-pixel surfel synthesis)."
 requires-python = ">=3.11"
 dependencies = [
     "shared",

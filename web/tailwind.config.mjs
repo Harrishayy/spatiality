@@ -1,6 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./app/**/*.{ts,tsx}"],
+  // Scope the JIT scan to files that actually emit JSX. SplatViewer.tsx is
+  // the heavy one; if it lived in a non-jsx subdir we'd exclude it. As-is,
+  // we still need it scanned for its 39 className attrs, but excluding the
+  // PLY parser body would be ideal — if SplatViewer is split later, narrow
+  // this glob to ./app/{components,scenes,hooks}/**/*.tsx and ./app/*.tsx.
+  content: ["./app/**/*.tsx"],
   theme: {
     extend: {
       colors: {

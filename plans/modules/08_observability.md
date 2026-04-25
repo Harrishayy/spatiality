@@ -105,17 +105,38 @@ Pipeline modules must emit these named spans with metadata:
 |-----------|--------|----------------|
 | `capture.extract_frames` | capture | `scene_id`, `frame_count`, `source_camera` |
 | `inference.vggt` | inference | `scene_id`, `frame_count`, `gpu` |
-| `inference.3dgrut` | inference | `scene_id`, `iterations`, `gpu` |
+| `inference.splat` | inference | `scene_id`, `gpu`, `gaussian_count` |
 | `segmentation.sam3` | segmentation | `scene_id`, `keyframe_count`, `mask_count` |
 | `segmentation.vlm_label` | segmentation | `scene_id`, `cluster_count` (cost auto-attached) |
 | `agent.locate` | agent | `scene_id` (cost auto-attached) |
 
-Inside `inference.3dgrut`, drop milestone events at iterations 1k / 3k / 7k:
-```python
-logfire.info("3dgrut_iteration", scene_id=scene_id, step=step, loss=loss)
-```
+VLM evidence is also captured at the call-site spans, so the website can read
+the actual model output without re-running inference:
 
-These appear as visual markers on the span and prove the training was real.
+| Span name | Module | Payload attrs |
+|-----------|--------|---------------|
+| `segmentation.vlm_proposal.frame` | proposer | `vlm_response_raw` (full text), `vlm_proposals` (parsed phrases + bboxes), `latency_ms`, `input_tokens`, `output_tokens`, `est_cost_usd`, `model_response_id`, `stop_reason` |
+| `segmentation.vlm_proposal.summary` | proposer | `proposals` (every phrase across keyframes), `proposal_count_total`, `proposal_count_per_frame` |
+| `segmentation.vlm_label.batch` | vlm | `vlm_response_raw`, `vlm_labels` (per-cluster label + confidence + alternatives), `tile_hints`, `latency_ms`, `input_tokens`, `output_tokens`, `est_cost_usd`, `model_response_id`, `stop_reason` |
+| `segmentation.vlm_label.summary` | vlm | `labels` (final per-cluster label map), `kept_count`, `rejected_none_count`, `dropped_duplicate_count` |
+
+Modal-side wrapper spans cover the wall-clock for each web endpoint plus the
+volume reload/commit + subprocess overhead that lives outside the named
+pipeline spans:
+
+| Span name | Module | Attrs |
+|-----------|--------|-------|
+| `modal.process_video` | modal_app | `scene_id`, `source_kind`, `frame_count`, `video_duration_s`, `video_width`, `video_height`, `backend`, `inference_spawned` |
+| `modal.run_inference` | modal_app | `scene_id`, `backend`, `keyframes`, `segment`, `segmentation_spawned` |
+| `modal.run_segmentation` | modal_app | `scene_id`, `keyframes` |
+| `modal.prepare_scene` | modal_app | `scene_id`, `manifest_state` |
+| `modal.subprocess.<stage>` | modal_app | `scene_id`, `stage`, `argv`, `returncode`, `stdout_tail`, `stderr_tail` (on failure) |
+| `modal.ffprobe`, `modal.ffmpeg_extract` | modal_app | `scene_id`, ffprobe/ffmpeg facts |
+
+The `inference.splat` span is a single voxel-downsample of the surfels
+emitted by `inference.vggt`; no per-step milestones are needed since
+there's no iterative training. The `gaussian_count` attribute on the span
+is the proof point — visible in the waterfall metadata.
 
 ### Pre-demo bake
 1. Run the full pipeline on the chosen scene end-to-end.
@@ -141,12 +162,12 @@ This gives you a verifiable timing story even in a Logfire outage.
 ### What audience-grade trace metadata looks like
 Bad (low information density):
 ```
-inference.3dgrut    380.4s
+inference.splat    1.2s
 ```
 
 Good (specific, demo-worthy):
 ```
-inference.3dgrut    380.4s   scene_id=demo_scene_v1, iterations=7000, gpu=A100, final_loss=0.012
+inference.splat    1.2s   scene_id=demo_scene_v1, gpu=A100-80GB, gaussian_count=1_120_345
 ```
 
 The metadata is what makes a 30-second screenshot of the dashboard convincing.

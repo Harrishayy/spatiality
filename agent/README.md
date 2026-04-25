@@ -1,5 +1,14 @@
-This module is owned by Devin in a separate workspace. Spec: [`../plans/modules/07_agent.md`](../plans/modules/07_agent.md).
+# /agent — Render orchestration backend
 
-Schemas to import (mirror of pydantic source of truth in `shared/shared/schemas/`): [`../shared/types/`](../shared/types/).
+Fastify (TypeScript) service that bridges the web app and Modal:
 
-Anthropic SDK reminder (from `08_observability.md`): use `authToken` (Bearer), NOT `apiKey`. Base URL `https://gateway-eu.pydantic.dev/proxy/anthropic/`.
+- `POST /api/uploads/init` → presigned R2 PUT URL (R2 mode)
+- `POST /api/uploads/local` → multipart upload, pushes to Modal Volume via `modal volume put` (local mode)
+- `POST /api/jobs` → fires `process_video` on Modal
+- `GET /api/jobs/:scene_id?mode=r2|local` → manifest passthrough (R2 bucket in r2 mode, Modal `get_manifest` in local mode)
+- `GET /health`
+
+Run locally: `pnpm install && pnpm --filter agent dev`.
+Local mode requires the `modal` CLI authenticated (`modal token current`).
+
+Env: see project-root `.env.example` (R2_*, MODAL_PROCESS_VIDEO_URL, MODAL_GET_MANIFEST_URL, CORS_ORIGINS).

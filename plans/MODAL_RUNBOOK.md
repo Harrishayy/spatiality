@@ -10,7 +10,7 @@ Operational guide for the three Modal web endpoints that drive the inference + s
 | `glasses-twin-artifacts`                      | Modal Volume   | Per-scene I/O. `/agent` (Render) writes frames + reads results from here.  |
 | `glasses-twin-weights`                        | Modal Volume   | VGGT + SAM 3.1 weights. Persistent so cold starts skip downloads.          |
 | `https://harrishayy21--prepare-scene.modal.run`   | Web endpoint   | Lightweight: seed `manifest.json` for a new scene.                         |
-| `https://harrishayy21--run-inference.modal.run`   | Web endpoint   | A100-80GB. VGGT poses + 3DGRUT splat. ~3–10 min.                            |
+| `https://harrishayy21--run-inference.modal.run`   | Web endpoint   | A100-80GB. VGGT depth + camera + per-pixel surfel synthesis. ~5–15 s.       |
 | `https://harrishayy21--run-segmentation.modal.run` | Web endpoint   | A100-80GB. SAM 3.1 masks + Claude Haiku VLM labels. ~3–8 min.              |
 
 The endpoint URLs are the deployed names — they print after `modal deploy`. Format: `https://<workspace>--<label>.modal.run`. Workspace here is `harrishayy21`.
@@ -52,8 +52,8 @@ curl -sS -X POST https://harrishayy21--prepare-scene.modal.run \
 # 4. Run inference. Wait for completion.
 curl -sS -X POST https://harrishayy21--run-inference.modal.run \
   -H 'content-type: application/json' \
-  -d "{\"scene_id\":\"$SCENE\",\"iterations\":7000}" \
-  --max-time 900
+  -d "{\"scene_id\":\"$SCENE\"}" \
+  --max-time 300
 
 # 5. Run segmentation (optional but writes annotations.json).
 curl -sS -X POST https://harrishayy21--run-segmentation.modal.run \
@@ -94,13 +94,13 @@ Lightweight (no GPU). Creates `/artifacts/scenes/<id>/frames/` and writes a `man
 
 ```jsonc
 // Request
-{ "scene_id": "demo_scene_v3", "iterations": 7000 }  // iterations defaults to 7000
+{ "scene_id": "demo_scene_v3" }     // optional: "keyframes": 5, "segment": true
 
 // Response
-{ "status": "ok", "scene_id": "demo_scene_v3", "iterations": 7000 }
+{ "status": "ok", "scene_id": "demo_scene_v3", "segmentation_spawned": true }
 ```
 
-A100-80GB, 15-min timeout. Runs `python -m inference --scene-id … --real --iterations …` inside the container. Writes `splat.ply`, `cameras.json`, `points.ply` to the volume. After success, `_finalize_manifest` flips `capture/poses/splat` to `complete` and rolls top-level `status` to `ready` (segmentation is optional). On `CalledProcessError` → marks `poses/splat` failed, top-level `failed`, appends the exception to `manifest.errors`.
+A100-80GB, 5-min timeout. Runs `python -m inference --scene-id … --real --stage poses` then `… --stage splat`. Stage 1 emits `cameras.json`, binary `points.ply`, and an internal `surfels.npz`; stage 2 voxel-downsamples the surfels and emits `splat.ply`. After success the top-level `status` rolls to `ready` (segmentation is optional). On `CalledProcessError` → marks `poses/splat` failed, top-level `failed`, appends the exception to `manifest.errors`.
 
 ### `POST /run-segmentation`
 
@@ -120,7 +120,7 @@ A100-80GB, 10-min timeout. Requires inference outputs already on the volume. Run
 just modal-deploy           # i.e. uv run modal deploy inference/modal_app.py
 ```
 
-First deploy: ~20-30 min (3DGRUT tiny-cuda-nn compile). Subsequent deploys: ~60-90 s when only `modal_app.py` or `/repo/*` source changes (image layers cached).
+First deploy: ~3-5 min (SAM 3.1 CUDA kernels + VGGT clone). Subsequent deploys: ~60-90 s when only `modal_app.py` or `/repo/*` source changes (image layers cached).
 
 After deploy, Modal prints the three endpoint URLs — copy them into env vars used by `/agent`:
 
@@ -195,7 +195,7 @@ If you hit a fresh `ModuleNotFoundError` from sam3, walk the chain again: `git c
 
 **`/run-segmentation` 500s.** Almost always missing inference outputs. Check `uv run modal volume ls glasses-twin-artifacts scenes/<id>/` includes `splat.ply` + `cameras.json`. If not, run inference first.
 
-**`addSplatScene` fails silently in the browser.** SplatViewer used to swallow the error — now logs to console. Most common cause: PLY format mismatch (3DGRUT vs `@mkkellogg/gaussian-splats-3d` expectation). Check the console for the exact error.
+**Splat fails to load in the browser.** Most common cause: PLY format mismatch — the inference splat stage writes binary little-endian INRIA layout. `web/app/components/SplatViewer.tsx:75–77` rejects anything else. Check the browser console.
 
 **Modal CLI says `command not found`.** Use `uv run modal …` — the package is in the project venv, not the global PATH.
 
@@ -207,7 +207,7 @@ If you hit a fresh `ModuleNotFoundError` from sam3, walk the chain again: `git c
 | --------------------- | --------- | ----------- |
 | Cold start (image pull + GPU acquire) | 30–90 s   | included in next call |
 | `prepare-scene`       | 1–3 s     | ~$0.001     |
-| `run-inference` (7000 iters) | 5–10 min  | $0.50–1.00  |
+| `run-inference` (VGGT + surfel synth) | 5–15 s    | ~$0.013     |
 | `run-segmentation` (5 keyframes) | 3–8 min   | $0.30–0.80  |
 
 Always use `--max-time` on curl to avoid hung clients holding GPU slots open beyond the function timeout.

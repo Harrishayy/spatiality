@@ -54,6 +54,9 @@ dmypy.json
 *.swp
 *.swo
 
+# Claude Code local session state
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -75,3 +78,4 @@ samples/*.mp4
 # Archived Kaggle workflow — moved to old/kaggle/ when we switched to Modal.
 # The ~6GB bundle and any kernel outputs live there; not worth committing.
 old/kaggle/
+node_modules

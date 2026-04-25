@@ -5,13 +5,36 @@ const nextConfig = {
   // its DOM children. Strict mode's double-invoked effect leaves orphan canvases
   // in the container, which then trips React's removeChild on the next render.
   reactStrictMode: false,
+
+  // tanstack-query is a barrel index — the optimizePackageImports flag lets
+  // Turbopack ship only the symbols actually used. SplatViewer already uses
+  // named imports from `three`, so three doesn't need the flag (named
+  // imports tree-shake natively, and the flag would force an extra index
+  // walk that defeats the point on cold compile).
+  experimental: {
+    optimizePackageImports: ["@tanstack/react-query"],
+  },
+
   async rewrites() {
+    const rules = [];
+
+    // Same-origin proxy to Modal's get-artifact endpoint. Avoids browser CORS
+    // preflight / QUIC alt-svc weirdness on cross-origin large-file fetches
+    // (curl works, browser fetch errors with `TypeError: Failed to fetch`).
+    // The dev server forwards the request without re-buffering the body.
+    const modalArtifact = process.env.NEXT_PUBLIC_MODAL_GET_ARTIFACT_URL;
+    if (modalArtifact) {
+      rules.push({ source: "/m/get-artifact", destination: modalArtifact });
+    }
+
     const agent = process.env.NEXT_PUBLIC_AGENT_URL;
-    if (!agent) return [];
-    return [
-      { source: "/api/:path*", destination: `${agent}/api/:path*` },
-      { source: "/artifacts/:path*", destination: `${agent}/artifacts/:path*` },
-    ];
+    if (agent) {
+      // Note: artifact URLs (splat.ply, annotations.json) bypass the agent and
+      // go direct to R2 (r2 mode) or Modal (local mode); see lib/api.ts.
+      rules.push({ source: "/api/:path*", destination: `${agent}/api/:path*` });
+    }
+
+    return rules;
   },
 };
 

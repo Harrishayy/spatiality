@@ -1,8 +1,8 @@
-"""Read Gaussian centers from a 3DGRUT-produced splat.ply.
+"""Read Gaussian centers from an INRIA-format splat.ply.
 
-3DGRUT writes one PLY vertex per Gaussian, with x/y/z (center) and many
-extra properties (color SH, opacity, scale, rotation). For segmentation
-clustering we only need centers.
+The inference splat stage writes one PLY vertex per Gaussian (x/y/z center
+plus color SH, opacity, scale, rotation). For segmentation clustering we
+only need centers; the rest of the per-Gaussian fields are ignored here.
 """
 
 from __future__ import annotations

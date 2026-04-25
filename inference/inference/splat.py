@@ -1,342 +1,174 @@
-"""3DGRUT splat training.
+"""Voxel-downsample VGGT surfels into an INRIA-layout splat PLY.
 
-Spec: plans/modules/02_inference.md. 3DGRUT (nv-tlabs/3dgrut) uses Hydra
-configs and a `train.py` entry point. We invoke it as a subprocess so we
-don't have to import its internals.
+Spec: plans/modules/02_inference.md.
 
-3DGRUT's actual CLI varies between versions. We try a couple of known invocations
-in order. If your fork uses different args, override with INFERENCE_3DGRUT_CMD
-(a JSON list, e.g. '["python","/opt/3dgrut/train.py","--config","..."]').
+Pipeline shape:
+  poses.py → surfels.npz (per-pixel anisotropic Gaussians from VGGT depth)
+  splat.py → splat.ply   (voxel-downsampled, INRIA-format binary PLY)
 
-While the subprocess runs we tail its stdout and emit `logfire.info(
-"3dgrut_iteration", scene_id, step, loss)` events at the milestones called
-out in plans/modules/08_observability.md (1k / 3k / 7k). These show up as
-visual markers on the parent span and prove the training was real.
+The previous gsplat per-scene training has been removed entirely. Surfels
+synthesised from VGGT's depth + camera heads are already aligned to scene
+surfaces — they just need de-duplication where multiple input frames see
+the same surface point. Voxel downsample at ~0.5% of scene-diagonal does
+that in <100 ms on CPU at 8M points (NumPy-only, no Open3D dep).
 """
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
-import logfire
+import numpy as np
 
-THREEDGRUT_ROOT = os.environ.get("THREEDGRUT_ROOT", "/opt/3dgrut")
-INFERENCE_3DGRUT_CMD = os.environ.get("INFERENCE_3DGRUT_CMD")  # JSON list override
+# Voxel size as a fraction of scene diagonal. Smaller = denser cloud, finer
+# detail, more GPU cost in the viewer. 0.005 is the perf knee for the
+# Spark renderer on a laptop GPU at MAX_SPLATS=1.5M.
+VGGT_VOXEL_SIZE_FRAC = float(os.environ.get("VGGT_VOXEL_SIZE_FRAC", "0.005"))
 
-
-def _candidate_commands(root: Path, frames_dir: Path, cameras_json: Path, out_ply: Path, iterations: int) -> list[list[str]]:
-    """Best-guess 3DGRUT invocations. We try them in order."""
-    py = sys.executable
-    train_py = root / "train.py"
-    scripts_train_py = root / "scripts" / "train.py"
-    return [
-        # Explicit user override
-        json.loads(INFERENCE_3DGRUT_CMD) if INFERENCE_3DGRUT_CMD else None,
-        # Hydra-style (likely in newer 3DGRUT)
-        [
-            py, str(train_py),
-            f"path={frames_dir}",
-            f"out_dir={out_ply.parent}",
-            f"max_steps={iterations}",
-        ] if train_py.exists() else None,
-        # Older script-style
-        [
-            py, str(scripts_train_py),
-            "--frames", str(frames_dir),
-            "--cameras", str(cameras_json),
-            "--out", str(out_ply),
-            "--iterations", str(iterations),
-        ] if scripts_train_py.exists() else None,
-    ]
+# Hard floor — below this, surfel synthesis has gone wrong upstream.
+MIN_SURFELS = 1000
 
 
-# Match step + (optionally) loss in lines like:
-#   "iter 1000  loss=0.0512"
-#   "step: 7000, loss=0.012"
-#   "[3000/7000]  loss 0.043"
-_STEP_RE = re.compile(r"(?:iter|step|iteration)\D*?(\d{3,7})", re.IGNORECASE)
-_LOSS_RE = re.compile(r"loss[=:\s]+([0-9]*\.?[0-9]+)", re.IGNORECASE)
-# Default milestones; override via INFERENCE_3DGRUT_MILESTONES="1000,3000,7000".
-_DEFAULT_MILESTONES = (1000, 3000, 7000)
-
-
-def _milestones() -> tuple[int, ...]:
-    raw = os.environ.get("INFERENCE_3DGRUT_MILESTONES")
-    if not raw:
-        return _DEFAULT_MILESTONES
-    try:
-        return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
-    except ValueError:
-        return _DEFAULT_MILESTONES
-
-
-def _stream_with_milestones(cmd: list[str], scene_id: str | None) -> int:
-    """Run cmd, mirror its output, and emit logfire.info events at milestones.
-
-    Returns the number of milestone events emitted (for the parent span attr).
+# ── Voxel downsample (NumPy, no Open3D) ─────────────────────────────────
+def _voxel_downsample(
+    xyz: np.ndarray,        # (N, 3)
+    conf: np.ndarray,       # (N,)
+    voxel_size: float,
+) -> np.ndarray:
+    """Group points by voxel; return indices of the highest-confidence point
+    in each voxel. Fully vectorised — uses a lexsort trick: sort by
+    (voxel_hash, -conf) so the first element of each group is its argmax,
+    then the unique-keys boundary mask gives us those representatives in one
+    pass. ~100× faster than a Python per-group argmax loop at 2 M+ voxels.
     """
-    targets = _milestones()
-    fired: set[int] = set()
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-    )
-    assert proc.stdout is not None
-    last_loss: float | None = None
-    for line in proc.stdout:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        loss_match = _LOSS_RE.search(line)
-        if loss_match:
-            try:
-                last_loss = float(loss_match.group(1))
-            except ValueError:
-                pass
-        step_match = _STEP_RE.search(line)
-        if not step_match:
-            continue
-        try:
-            step = int(step_match.group(1))
-        except ValueError:
-            continue
-        # Fire on first sighting of any milestone.
-        for t in targets:
-            if t not in fired and step >= t:
-                fired.add(t)
-                logfire.info(
-                    "3dgrut_iteration",
-                    scene_id=scene_id,
-                    step=t,
-                    observed_step=step,
-                    loss=last_loss,
-                )
-    rc = proc.wait()
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
-    return len(fired)
+    keys = np.floor(xyz / voxel_size).astype(np.int64)
+    # Pack (kx, ky, kz) into a single int64 hash. We allow per-axis up to ~21
+    # bits which is plenty for any reasonable scene at 0.005 fraction.
+    SHIFT = 21
+    MASK = (1 << SHIFT) - 1
+    h = ((keys[:, 0] & MASK) << (2 * SHIFT)) \
+        | ((keys[:, 1] & MASK) << SHIFT) \
+        | (keys[:, 2] & MASK)
+
+    # lexsort orders by the LAST key first → primary key h ascending,
+    # secondary key conf descending (via -conf). Within each h-group the
+    # highest-conf point now sits at the group's first position.
+    order = np.lexsort((-conf, h))
+    h_sorted = h[order]
+
+    # Mark the first index of every new group: those are the representatives
+    # we want to keep (one per voxel, max-conf).
+    diff = np.empty(h_sorted.shape, dtype=bool)
+    diff[0] = True
+    diff[1:] = h_sorted[1:] != h_sorted[:-1]
+    return order[diff]
 
 
-def _fallback_to_points(
+# ── Output: INRIA-layout PLY ────────────────────────────────────────────
+def _export_inria_ply(
     out_ply: Path,
-    points_ply: Path | None,
-    reason: str,
-    *,
-    frames_dir: Path | None = None,
-    cameras_json: Path | None = None,
+    xyz: np.ndarray,         # (N, 3)
+    f_dc: np.ndarray,        # (N, 3)
+    opacity: np.ndarray,     # (N,)
+    log_scale: np.ndarray,   # (N, 3)
+    quat: np.ndarray,        # (N, 4) wxyz
 ) -> int:
-    """Degrade to a point-cloud-derived synthetic Gaussian splat.
+    """Write the standard INRIA 3DGS layout: x y z nx ny nz f_dc_0..2 opacity
+    scale_0..2 rot_0..3 (binary little-endian float32). Web viewer
+    (web/app/components/SplatViewer.tsx) decodes this layout natively."""
+    n = xyz.shape[0]
+    # Normalise quaternions defensively — surfel synth in poses.py already
+    # does this but voxel-downsample doesn't preserve the constraint.
+    q = quat.astype(np.float32)
+    q /= np.linalg.norm(q, axis=1, keepdims=True) + 1e-9
 
-    3DGRUT has heavy runtime deps and integration gaps that aren't worth blocking
-    a demo on. Instead, when 3DGRUT can't run, we synthesize a Gaussian-splat PLY
-    from VGGT's seed points: each point becomes an isotropic Gaussian.
+    rows = np.empty((n, 17), dtype=np.float32)
+    rows[:, 0:3] = xyz.astype(np.float32)
+    rows[:, 3:6] = 0.0  # nx ny nz placeholders — Spark ignores these.
+    rows[:, 6:9] = f_dc.astype(np.float32)
+    rows[:, 9] = opacity.astype(np.float32)
+    rows[:, 10:13] = log_scale.astype(np.float32)
+    rows[:, 13:17] = q  # wxyz
 
-    For each point we project into every keyframe and take the median pixel
-    color across the frames where it lands inside the image — this turns the
-    cloud from invisible-mid-gray into something that actually shows the scene.
-
-    Output schema matches the inria 3DGS / supersplat conventions:
-      x, y, z, scale_0..2 (log-scale), rot_0..3 (quat wxyz, identity),
-      f_dc_0..2 (color DC, decoded as (rgb - 0.5) / 0.282), opacity (logit).
-    """
-    if not (points_ply and points_ply.exists()):
-        out_ply.write_bytes(_gaussian_ply_header(0))
-        print(f"splat: 3DGRUT unavailable ({reason}) and no points.ply seed. Wrote empty splat.")
-        return 0
-
-    import numpy as np
-
-    pts = _read_xyz_ply(points_ply)
-    n = len(pts)
-    # Synthetic Gaussian params:
-    # - log-scale = ln(0.03) ≈ -3.5, ~3cm radius (visible at typical viewer distance)
-    # - identity quaternion (w=1, x=y=z=0)
-    # - opacity logit ≈ 4 (sigmoid → 0.98)
-    log_scale = float(np.log(0.03))
-    sh_const_inv = 1.0 / 0.282094791  # 1 / Y_0_0 in spherical harmonics
-    opacity_logit = 4.0
-
-    rgb = _sample_colors_from_frames(pts, frames_dir, cameras_json)
-    # f_dc encodes (rgb - 0.5) * sh_const_inv, with rgb in [0,1].
-    color_dc = (rgb - 0.5) * sh_const_inv
-
-    out_ply.write_bytes(_gaussian_ply_header(n))
-    with out_ply.open("ab") as f:
-        rows = np.empty((n, 14), dtype=np.float32)
-        rows[:, 0:3] = pts
-        rows[:, 3:6] = log_scale
-        rows[:, 6] = 1.0  # rot_0 (w)
-        rows[:, 7:10] = 0.0  # rot_1..3 (x, y, z)
-        rows[:, 10:13] = color_dc
-        rows[:, 13] = opacity_logit
-        f.write(rows.tobytes(order="C"))
-
-    print(
-        f"splat: 3DGRUT unavailable ({reason}). Wrote {n} synthetic gaussians "
-        f"(scale=3cm, sampled colors) -> {out_ply.name}"
-    )
-    return 0
-
-
-def _sample_colors_from_frames(pts, frames_dir, cameras_json):
-    """For each xyz point, return an (N, 3) RGB-in-[0,1] array sampled from
-    keyframes via the known cameras. Falls back to mid-gray when projection
-    inputs are missing or no frame contains the point."""
-    import numpy as np
-
-    n = len(pts)
-    fallback = np.full((n, 3), 0.5, dtype=np.float32)
-    if frames_dir is None or cameras_json is None:
-        return fallback
-    try:
-        cameras = json.loads(Path(cameras_json).read_text())
-    except Exception:
-        return fallback
-    if not cameras:
-        return fallback
-
-    try:
-        from PIL import Image
-    except Exception:
-        return fallback
-
-    homo = np.concatenate([pts, np.ones((n, 1), dtype=np.float32)], axis=1)
-    accum = np.zeros((n, 3), dtype=np.float64)
-    counts = np.zeros(n, dtype=np.int32)
-
-    # Sample at most ~12 frames evenly across the trajectory; full coverage is overkill.
-    step = max(1, len(cameras) // 12)
-    for cam in cameras[::step]:
-        try:
-            ext = np.asarray(cam["extrinsic"], dtype=np.float32)
-            intr = np.asarray(cam["intrinsic"], dtype=np.float32)
-            frame_path = frames_dir / cam["frame"]
-            if not frame_path.exists():
-                continue
-            img = np.asarray(Image.open(frame_path).convert("RGB"), dtype=np.float32) / 255.0
-        except Exception:
-            continue
-        h, w, _ = img.shape
-        cam_pts = homo @ ext.T
-        z = cam_pts[:, 2]
-        in_front = z > 1e-6
-        safe_z = np.where(in_front, z, 1.0)
-        pix = (cam_pts[:, :3] / safe_z[:, None]) @ intr.T
-        u = np.rint(pix[:, 0]).astype(np.int32)
-        v = np.rint(pix[:, 1]).astype(np.int32)
-        ok = in_front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
-        if not ok.any():
-            continue
-        idx = np.flatnonzero(ok)
-        accum[idx] += img[v[idx], u[idx]]
-        counts[idx] += 1
-
-    seen = counts > 0
-    if not seen.any():
-        return fallback
-    out = fallback.copy()
-    out[seen] = (accum[seen] / counts[seen, None]).astype(np.float32)
-    return out
-
-
-_GAUSSIAN_PLY_PROPS = (
-    "property float x", "property float y", "property float z",
-    "property float scale_0", "property float scale_1", "property float scale_2",
-    "property float rot_0", "property float rot_1", "property float rot_2", "property float rot_3",
-    "property float f_dc_0", "property float f_dc_1", "property float f_dc_2",
-    "property float opacity",
-)
-
-
-def _gaussian_ply_header(n: int) -> bytes:
-    return (
-        f"ply\nformat binary_little_endian 1.0\nelement vertex {n}\n"
-        + "\n".join(_GAUSSIAN_PLY_PROPS)
-        + "\nend_header\n"
+    header = (
+        "ply\nformat binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "property float nx\nproperty float ny\nproperty float nz\n"
+        "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+        "property float opacity\n"
+        "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+        "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+        "end_header\n"
     ).encode()
+    with out_ply.open("wb") as f:
+        f.write(header)
+        f.write(rows.tobytes(order="C"))
+    return n
 
 
-def _read_xyz_ply(path: Path):
-    """Minimal ASCII-PLY x/y/z reader — matches what poses._save_points writes."""
-    import numpy as np
-
-    with path.open() as f:
-        line = ""
-        while line.strip() != "end_header":
-            line = f.readline()
-            if not line:
-                return np.empty((0, 3), dtype=np.float32)
-        rows = []
-        for line in f:
-            parts = line.split()
-            if len(parts) >= 3:
-                rows.append([float(parts[0]), float(parts[1]), float(parts[2])])
-    return np.array(rows, dtype=np.float32)
-
-
+# ── Public entry point ──────────────────────────────────────────────────
 def run(
     frames_dir: Path,
     cameras_json: Path,
     out_ply: Path,
-    iterations: int = 7000,
     scene_id: str | None = None,
-) -> int:
-    """Run 3DGRUT; return the count of milestone events emitted.
+) -> dict:
+    """Voxel-downsample the surfels emitted by poses.py and write splat.ply.
+    Returns `{"gaussian_count": int}`.
 
-    Degrades to copying points.ply -> splat.ply if 3DGRUT can't run.
-    Set INFERENCE_3DGRUT_REQUIRED=1 to force a hard failure instead.
+    Raises (no fallback) on:
+      - missing surfels.npz (poses stage probably failed)
+      - degenerate cloud (< MIN_SURFELS surfels)
+
+    The frames_dir + cameras_json args are kept for parity with the call-site
+    in cli.py but are unused — all the per-pixel work happened upstream.
     """
-    points_ply = cameras_json.parent / "points.ply"
-    required = os.environ.get("INFERENCE_3DGRUT_REQUIRED") == "1"
-
-    root = Path(THREEDGRUT_ROOT)
-    if not root.exists():
-        if required:
-            raise FileNotFoundError(f"3DGRUT not found at {root}.")
-        return _fallback_to_points(
-            out_ply,
-            points_ply,
-            f"missing root {root}",
-            frames_dir=frames_dir,
-            cameras_json=cameras_json,
+    surfels_path = cameras_json.parent / "surfels.npz"
+    if not surfels_path.exists():
+        raise FileNotFoundError(
+            f"splat: surfels.npz missing at {surfels_path} — "
+            "VGGT poses stage probably failed (check stages.poses.error in manifest)"
         )
 
-    cmds = [c for c in _candidate_commands(root, frames_dir, cameras_json, out_ply, iterations) if c]
-    last_err: Exception | None = None
-    for cmd in cmds:
-        print(f"3dgrut: trying {' '.join(cmd)}", flush=True)
-        try:
-            milestones_fired = _stream_with_milestones(cmd, scene_id=scene_id)
-        except subprocess.CalledProcessError as e:
-            last_err = e
-            print(f"  -> failed with exit {e.returncode}, trying next", flush=True)
-            continue
-        except FileNotFoundError as e:
-            last_err = e
-            print(f"  -> {e}, trying next", flush=True)
-            continue
+    data = np.load(surfels_path)
+    xyz = data["xyz"]
+    f_dc = data["f_dc"]
+    opacity = data["opacity"]
+    log_scale = data["log_scale"]
+    quat = data["quat"]
+    conf = data["conf"]
 
-        # 3DGRUT writes wherever `out_dir` says; if our out_ply isn't there, find it.
-        if out_ply.exists():
-            return milestones_fired
-        candidates = list(out_ply.parent.rglob("*.ply"))
-        if candidates:
-            best = max(candidates, key=lambda p: p.stat().st_size)
-            shutil.copy(best, out_ply)
-            print(f"3dgrut: copied {best} -> {out_ply}")
-            return milestones_fired
-        last_err = RuntimeError(f"3dgrut succeeded but produced no .ply in {out_ply.parent}")
+    n_in = xyz.shape[0]
+    if n_in < MIN_SURFELS:
+        raise RuntimeError(
+            f"splat: surfel cloud too small ({n_in} pts) — "
+            "VGGT depth gates probably too strict (lower VGGT_DEPTH_CONF_MIN)"
+        )
 
-    if required:
-        raise RuntimeError(f"3dgrut: all candidate commands failed. Last error: {last_err}")
-    return _fallback_to_points(
-        out_ply,
-        points_ply,
-        f"all commands failed: {last_err}",
-        frames_dir=frames_dir,
-        cameras_json=cameras_json,
+    # Scene diagonal sets the voxel size. Use 95th-percentile bounding-box
+    # extent rather than min/max to ignore the long tail of low-confidence
+    # outliers (which voxel-downsample would otherwise dilute against).
+    p_lo = np.percentile(xyz, 2.5, axis=0)
+    p_hi = np.percentile(xyz, 97.5, axis=0)
+    diag = float(np.linalg.norm(p_hi - p_lo))
+    voxel_size = max(VGGT_VOXEL_SIZE_FRAC * diag, 1e-4)
+
+    keep = _voxel_downsample(xyz, conf, voxel_size)
+    print(
+        f"splat: {n_in} surfels → {keep.shape[0]} after voxel downsample "
+        f"(voxel={voxel_size:.4f}, scene_diag={diag:.3f})",
+        flush=True,
     )
+
+    n_out = _export_inria_ply(
+        out_ply,
+        xyz=xyz[keep],
+        f_dc=f_dc[keep],
+        opacity=opacity[keep],
+        log_scale=log_scale[keep],
+        quat=quat[keep],
+    )
+    print(f"splat: wrote {n_out} gaussians -> {out_ply}", flush=True)
+
+    return {"gaussian_count": n_out}

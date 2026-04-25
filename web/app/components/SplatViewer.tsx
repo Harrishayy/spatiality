@@ -1,61 +1,87 @@
 "use client";
 
 /**
- * Splat viewer: parses our INRIA-layout PLY ourselves and renders it as a
- * Three.js Points cloud. We dropped @mkkellogg/gaussian-splats-3d after it
- * silently rendered nothing for a 27MB-then-2MB-then-32MB sequence of valid
- * PLYs across ~6 hours of debugging — the library reported parse success and
- * sceneCount=1 but never put pixels on screen. The Points-cloud render below
- * uses only documented Three.js primitives (BufferGeometry, Points,
- * PointsMaterial), so failures surface as actual exceptions.
+ * Splat viewer: renders the per-pixel VGGT cloud (`points.ply`, ~12 M raw
+ * coloured points) directly via three.js `Points`. Matches the aesthetic of
+ * VGGT's reference `demo_viser.py` — crisp opaque coloured pixels, no
+ * blending, surface impression emerges from per-pixel density.
+ *
+ * Rationale: anisotropic Gaussian splatting via @sparkjsdev/spark forces a
+ * 2 M-Gaussian budget (each Gaussian = 17 floats = 68 B in GPU memory), which
+ * meant voxel-downsampling the raw VGGT cloud 10× and then over-blending the
+ * survivors into surface goo. Points use 6 B each (3 float32 xyz + 3 uint8
+ * rgb), so the full 12 M cloud fits in a 76 MB GPU buffer with no blending.
+ *
+ * The companion `splat.ply` (1.24 M anisotropic Gaussians, INRIA layout) is
+ * still produced server-side but only consumed by the segmentation pipeline
+ * (`segmentation/splat_io.py:load_centers`); the viewer ignores it.
  */
 
 import { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
+// Named imports (instead of `import * as THREE`) so Turbopack tree-shakes
+// three.js properly — bundler memory during /scenes/[id] compile drops
+// dramatically (the namespace import was forcing every three module to be
+// held in memory, ~600KB minified).
+import {
+  AmbientLight,
+  BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
+  Camera,
+  Color,
+  DirectionalLight,
+  EdgesGeometry,
+  GridHelper,
+  LineBasicMaterial,
+  LineSegments,
+  PerspectiveCamera,
+  Points,
+  PointsMaterial,
+  Scene,
+  Spherical,
+  Vector3,
+  WebGLRenderer,
+} from "three";
 import type { Annotation } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { AnnotationOverlay } from "./AnnotationOverlay";
 
-// PLY decode constant: f_dc * SH_C0 + 0.5 = RGB ∈ [0,1]
-const SH_C0 = 0.282094791;
+// "end_header\n" — used as a needle in the streaming parser to detect when the
+// PLY ASCII header is fully received and we can transition to body parsing.
+const END_HEADER_NEEDLE = new TextEncoder().encode("end_header\n");
 
-/** Minimal PLY parser for binary_little_endian float headers.
- *  Returns positions (Nx3 Float32) and colors (Nx3 Float32 in [0,1]).
- *  Decodes color from f_dc_* if present, else falls back to per-vertex
- *  red/green/blue uchar attributes if present, else mid-gray. */
-function parsePly(buf: ArrayBuffer): {
-  positions: Float32Array;
-  colors: Float32Array;
-  count: number;
-} {
-  const bytes = new Uint8Array(buf);
-  // Header is ASCII; find "end_header\n".
-  const needle = new TextEncoder().encode("end_header\n");
-  let bodyOff = -1;
-  for (let i = 0; i + needle.length <= bytes.length; i++) {
-    let m = true;
-    for (let j = 0; j < needle.length; j++) {
-      if (bytes[i + j] !== needle[j]) {
-        m = false;
-        break;
-      }
+/** Find the offset just past `end_header\n` in a possibly-incomplete byte
+ *  buffer. Returns -1 if the marker isn't present yet (caller should keep
+ *  reading more chunks). Used by the streaming PLY parser. */
+function findEndHeader(buf: Uint8Array): number {
+  const n = END_HEADER_NEEDLE.length;
+  outer: for (let i = 0; i + n <= buf.length; i++) {
+    for (let j = 0; j < n; j++) {
+      if (buf[i + j] !== END_HEADER_NEEDLE[j]) continue outer;
     }
-    if (m) {
-      bodyOff = i + needle.length;
-      break;
-    }
+    return i + n;
   }
-  if (bodyOff < 0) throw new Error("PLY: no end_header marker");
-  const header = new TextDecoder("ascii").decode(bytes.subarray(0, bodyOff));
-  if (!header.includes("format binary_little_endian 1.0")) {
+  return -1;
+}
+
+/** Parse the ASCII header of a binary little-endian PLY file. Returns the
+ *  total vertex `count`, the body `stride` (bytes per vertex), and `layout`
+ *  — the byte offsets within each vertex record for x/y/z (float32) and
+ *  r/g/b (uchar). points.ply is the only PLY dialect we read here; the
+ *  Gaussian splat.ply with f_dc_* SH coefficients is not consumed by the
+ *  viewer anymore. */
+function parsePlyHeader(headerStr: string): {
+  count: number;
+  stride: number;
+  layout: { x: number; y: number; z: number; r: number; g: number; b: number };
+} {
+  if (!headerStr.includes("format binary_little_endian 1.0")) {
     throw new Error("PLY: only binary_little_endian 1.0 supported");
   }
 
-  // Walk header for vertex count and property list (in declaration order).
-  type Prop = { name: string; type: string };
   let count = 0;
-  const props: Prop[] = [];
-  for (const line of header.split("\n")) {
+  const props: { name: string; type: string }[] = [];
+  for (const line of headerStr.split("\n")) {
     if (line.startsWith("element vertex ")) {
       count = parseInt(line.split(/\s+/)[2], 10);
     } else if (line.startsWith("property ")) {
@@ -65,8 +91,7 @@ function parsePly(buf: ArrayBuffer): {
   }
   if (!count) throw new Error("PLY: vertex count = 0");
 
-  // Compute strides (we only support float32 + uchar per-property, which
-  // covers every Gaussian-splat dialect we've seen).
+  // Only float32 + uchar are supported (covers every PLY dialect we emit).
   const sizeOf = (t: string) =>
     t === "float" || t === "float32"
       ? 4
@@ -81,52 +106,31 @@ function parsePly(buf: ArrayBuffer): {
     offsetByName[p.name] = { off: stride, type: p.type };
     stride += sizeOf(p.type);
   }
+
   if (!offsetByName.x || !offsetByName.y || !offsetByName.z) {
     throw new Error("PLY: missing x/y/z");
   }
-
-  const dv = new DataView(buf, bodyOff);
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-
-  const readF = (i: number, name: string) =>
-    dv.getFloat32(i * stride + offsetByName[name].off, true);
-  const readU8 = (i: number, name: string) =>
-    dv.getUint8(i * stride + offsetByName[name].off);
-
-  const hasFdc =
-    "f_dc_0" in offsetByName &&
-    "f_dc_1" in offsetByName &&
-    "f_dc_2" in offsetByName;
-  const hasUchar =
-    "red" in offsetByName &&
-    "green" in offsetByName &&
-    "blue" in offsetByName &&
-    offsetByName.red.type !== "float";
-
-  for (let i = 0; i < count; i++) {
-    positions[i * 3] = readF(i, "x");
-    positions[i * 3 + 1] = readF(i, "y");
-    positions[i * 3 + 2] = readF(i, "z");
-    if (hasFdc) {
-      // RGB = SH_C0 * f_dc + 0.5, clamped.
-      const r = SH_C0 * readF(i, "f_dc_0") + 0.5;
-      const g = SH_C0 * readF(i, "f_dc_1") + 0.5;
-      const b = SH_C0 * readF(i, "f_dc_2") + 0.5;
-      colors[i * 3] = Math.max(0, Math.min(1, r));
-      colors[i * 3 + 1] = Math.max(0, Math.min(1, g));
-      colors[i * 3 + 2] = Math.max(0, Math.min(1, b));
-    } else if (hasUchar) {
-      colors[i * 3] = readU8(i, "red") / 255;
-      colors[i * 3 + 1] = readU8(i, "green") / 255;
-      colors[i * 3 + 2] = readU8(i, "blue") / 255;
-    } else {
-      colors[i * 3] = 0.7;
-      colors[i * 3 + 1] = 0.7;
-      colors[i * 3 + 2] = 0.7;
-    }
+  if (
+    !offsetByName.red ||
+    !offsetByName.green ||
+    !offsetByName.blue ||
+    (offsetByName.red.type !== "uchar" && offsetByName.red.type !== "uint8")
+  ) {
+    throw new Error("PLY: expected uchar red/green/blue (points.ply layout)");
   }
-  return { positions, colors, count };
+
+  return {
+    count,
+    stride,
+    layout: {
+      x: offsetByName.x.off,
+      y: offsetByName.y.off,
+      z: offsetByName.z.off,
+      r: offsetByName.red.off,
+      g: offsetByName.green.off,
+      b: offsetByName.blue.off,
+    },
+  };
 }
 
 type DebugState = {
@@ -157,9 +161,10 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<{
     cancel: () => void;
-    camera: THREE.Camera | null;
+    camera: Camera | null;
   }>({ cancel: () => undefined, camera: null });
   const setCamera = useUI((s) => s.setCamera);
+  const setCloudStats = useUI((s) => s.setCloudStats);
   const selectedId = useUI((s) => s.selectedId);
   const [debug, setDebug] = useState<DebugState>({ status: "idle", log: [] });
   const debugRef = useRef(debug);
@@ -191,6 +196,10 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
   useEffect(() => {
     setCameraRef.current = setCamera;
   }, [setCamera]);
+  const setCloudStatsRef = useRef(setCloudStats);
+  useEffect(() => {
+    setCloudStatsRef.current = setCloudStats;
+  }, [setCloudStats]);
 
   // Fly-to request: set externally (annotation click, preset button), the
   // render loop interpolates `target` and `radius` toward it each frame.
@@ -268,14 +277,19 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       }
 
       const container = containerRef.current;
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      // Perf knobs for 12 M-point clouds on a laptop GPU:
+      //   antialias: false — at 12 M points, MSAA fragment cost dominates
+      //     interactivity. The visual gain on dense pixel grain is invisible.
+      //   pixelRatio: min(DPR, 1.5) — Retina detail without paying 4× fragment
+      //     cost. With opaque points there's nothing to anti-alias anyway.
+      const renderer = new WebGLRenderer({ antialias: false, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       renderer.setSize(container.clientWidth, container.clientHeight);
       renderer.setClearColor(0x0a0a0c, 1);
       container.appendChild(renderer.domElement);
 
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(
+      const scene = new Scene();
+      const camera = new PerspectiveCamera(
         50,
         container.clientWidth / container.clientHeight,
         0.05,
@@ -286,7 +300,7 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       sceneRef.current.camera = camera;
 
       // Light scene scaffolding so the cloud has spatial context.
-      scene.add(new THREE.GridHelper(8, 16, 0x3a3a46, 0x1a1a20));
+      scene.add(new GridHelper(8, 16, 0x3a3a46, 0x1a1a20));
 
       // Camera controls:
       //   left-drag   → orbit around `target` (theta/phi)
@@ -295,8 +309,8 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       //   wheel       → dolly (radius); preventDefault on passive:false so the
       //                  browser doesn't scroll the page while you zoom
       //   keys WASD   → pan target horizontally; QE → pan vertically
-      const target = new THREE.Vector3(...initial.lookAt);
-      const sph = new THREE.Spherical();
+      const target = new Vector3(...initial.lookAt);
+      const sph = new Spherical();
       sph.setFromVector3(camera.position.clone().sub(target));
       let dragging: "orbit" | "pan" | null = null;
       let lastX = 0;
@@ -322,9 +336,9 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         } else {
           // Pan in camera-screen space scaled by radius so it feels
           // proportional at any zoom level.
-          const right = new THREE.Vector3();
-          const up = new THREE.Vector3();
-          camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+          const right = new Vector3();
+          const up = new Vector3();
+          camera.matrixWorld.extractBasis(right, up, new Vector3());
           const k = sph.radius * 0.0015;
           target.addScaledVector(right, -dx * k);
           target.addScaledVector(up, dy * k);
@@ -341,9 +355,9 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       const onContextMenu = (e: MouseEvent) => e.preventDefault();
       const onKey = (e: KeyboardEvent) => {
         const k = sph.radius * 0.04;
-        const right = new THREE.Vector3();
-        const up = new THREE.Vector3();
-        const fwd = new THREE.Vector3();
+        const right = new Vector3();
+        const up = new Vector3();
+        const fwd = new Vector3();
         camera.matrixWorld.extractBasis(right, up, fwd);
         fwd.negate();
         switch (e.key.toLowerCase()) {
@@ -356,12 +370,20 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
           case "r":
             target.set(...initial.lookAt);
             sph.setFromVector3(
-              new THREE.Vector3(...initial.position).sub(target),
+              new Vector3(...initial.position).sub(target),
             );
             break;
           default: return;
         }
       };
+      // Render-on-demand: only redraw when something changed. Each input
+      // event flips `dirty` true; the tick clears it after rendering. Idle
+      // GPU usage drops to zero when nothing is moving.
+      let dirty = true;
+      const markDirty = () => {
+        dirty = true;
+      };
+
       const dom = renderer.domElement;
       dom.addEventListener("pointerdown", onDown);
       window.addEventListener("pointermove", onMove);
@@ -369,6 +391,17 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       dom.addEventListener("wheel", onWheel, { passive: false });
       dom.addEventListener("contextmenu", onContextMenu);
       window.addEventListener("keydown", onKey);
+      // Any user interaction → schedule a render.
+      dom.addEventListener("pointerdown", markDirty);
+      window.addEventListener("pointermove", markDirty);
+      dom.addEventListener("wheel", markDirty);
+      window.addEventListener("keydown", markDirty);
+      window.addEventListener("resize", markDirty);
+      // Pause completely when tab is hidden; redraw once when it comes back.
+      const onVisibility = () => {
+        if (document.visibilityState === "visible") dirty = true;
+      };
+      document.addEventListener("visibilitychange", onVisibility);
 
       // Imperative API for outside UI (zoom buttons, minimap).
       apiRef.current = {
@@ -384,7 +417,7 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         reset: () => {
           target.set(...initial.lookAt);
           sph.setFromVector3(
-            new THREE.Vector3(...initial.position).sub(target),
+            new Vector3(...initial.position).sub(target),
           );
           flyToRef.current = null;
         },
@@ -402,32 +435,102 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       };
       window.addEventListener("resize", onResize);
 
-      const tick = () => {
-        // Interpolate toward the requested fly-to (annotation click etc.).
+      // Render-on-demand at 30 fps cap. Pre-allocated working vectors to
+      // avoid per-frame GC churn. Each tick:
+      //   1. Skip entirely if the tab is hidden.
+      //   2. Compute camera target/offset; if anything moved, mark dirty.
+      //   3. Push camera state + render only when dirty (or while a fly-to
+      //      is in flight).
+      const FRAME_INTERVAL_MS = 1000 / 30;
+      const MOVE_EPS = 1e-6;
+      const tmpVec = new Vector3();
+      const tmpDir = new Vector3();
+      const tmpFlyDst = new Vector3();
+      let lastRender = 0;
+      let lastTheta = sph.theta;
+      let lastPhi = sph.phi;
+      let lastRadius = sph.radius;
+      let lastTargetX = target.x;
+      let lastTargetY = target.y;
+      let lastTargetZ = target.z;
+      const tick = (now: number) => {
+        if (document.visibilityState !== "visible") {
+          raf = requestAnimationFrame(tick);
+          return;
+        }
         const fly = flyToRef.current;
         if (fly) {
-          const dst = new THREE.Vector3(...fly.target);
-          target.lerp(dst, 0.12);
+          tmpFlyDst.set(fly.target[0], fly.target[1], fly.target[2]);
+          target.lerp(tmpFlyDst, 0.12);
           sph.radius += (fly.radius - sph.radius) * 0.12;
-          if (target.distanceToSquared(dst) < 1e-5 && Math.abs(sph.radius - fly.radius) < 1e-3) {
+          if (target.distanceToSquared(tmpFlyDst) < 1e-5 && Math.abs(sph.radius - fly.radius) < 1e-3) {
             flyToRef.current = null;
           }
+          dirty = true;
         }
-        const offset = new THREE.Vector3().setFromSpherical(sph);
-        camera.position.copy(target.clone().add(offset));
-        camera.lookAt(target);
-        const dirVec = new THREE.Vector3();
-        camera.getWorldDirection(dirVec);
-        setCameraRef.current(
-          [camera.position.x, camera.position.y, camera.position.z],
-          [dirVec.x, dirVec.y, dirVec.z],
-        );
-        renderer.render(scene, camera);
+        if (
+          Math.abs(sph.theta - lastTheta) > MOVE_EPS ||
+          Math.abs(sph.phi - lastPhi) > MOVE_EPS ||
+          Math.abs(sph.radius - lastRadius) > MOVE_EPS ||
+          Math.abs(target.x - lastTargetX) > MOVE_EPS ||
+          Math.abs(target.y - lastTargetY) > MOVE_EPS ||
+          Math.abs(target.z - lastTargetZ) > MOVE_EPS
+        ) {
+          dirty = true;
+        }
+
+        if (dirty && now - lastRender >= FRAME_INTERVAL_MS) {
+          tmpVec.setFromSpherical(sph);
+          camera.position.copy(target).add(tmpVec);
+          camera.lookAt(target);
+          camera.getWorldDirection(tmpDir);
+          setCameraRef.current(
+            [camera.position.x, camera.position.y, camera.position.z],
+            [tmpDir.x, tmpDir.y, tmpDir.z],
+          );
+          renderer.render(scene, camera);
+          lastRender = now;
+          lastTheta = sph.theta;
+          lastPhi = sph.phi;
+          lastRadius = sph.radius;
+          lastTargetX = target.x;
+          lastTargetY = target.y;
+          lastTargetZ = target.z;
+          dirty = false;
+        }
         raf = requestAnimationFrame(tick);
       };
-      tick();
+      tick(performance.now());
+
+      // Three.js Points renderer over the parsed cloud. One BufferGeometry,
+      // one PointsMaterial, one Points object. Coordinate frame: PLY xyz
+      // passes through unchanged so annotation centroids (recorded in the
+      // same frame upstream) overlay correctly without a transform.
+      let pointGeo: BufferGeometry | null = null;
+      let pointMat: PointsMaterial | null = null;
+      let cloud: Points | null = null;
+      const abortCtl = new AbortController();
 
       cleanup.push(() => {
+        try {
+          abortCtl.abort();
+        } catch {
+          /* abort can throw if already aborted */
+        }
+        try {
+          if (cloud) scene.remove(cloud);
+          pointGeo?.dispose();
+          pointMat?.dispose();
+        } catch {
+          /* race */
+        }
+        // Clear cloud stats so the pipeline panel doesn't carry stale numbers
+        // into the next scene.
+        try {
+          setCloudStatsRef.current(null);
+        } catch {
+          /* race on unmount */
+        }
         cancelAnimationFrame(raf);
         dom.removeEventListener("pointerdown", onDown);
         window.removeEventListener("pointermove", onMove);
@@ -436,6 +539,12 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         dom.removeEventListener("contextmenu", onContextMenu);
         window.removeEventListener("keydown", onKey);
         window.removeEventListener("resize", onResize);
+        dom.removeEventListener("pointerdown", markDirty);
+        window.removeEventListener("pointermove", markDirty);
+        dom.removeEventListener("wheel", markDirty);
+        window.removeEventListener("keydown", markDirty);
+        window.removeEventListener("resize", markDirty);
+        document.removeEventListener("visibilitychange", onVisibility);
         try {
           renderer.dispose();
           renderer.forceContextLoss();
@@ -444,86 +553,204 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
           /* renderer disposal may race */
         }
       });
-
-      // Fetch + parse PLY ourselves, build Three.js Points from xyz + decoded RGB.
       const fetchStart = performance.now();
       pushDebug(
         { status: "fetching", error: undefined, errorStack: undefined },
         `fetching ${splatUrl}`,
       );
-      fetch(splatUrl)
+      // Streaming progressive load. Bytes arrive in chunks; we parse complete
+      // vertices and grow the Three.js geometry as they come in. Cloud
+      // appears progressively instead of after a 30–60 s blocking download +
+      // parse cycle. Two perf wins:
+      //   1. UX: first points visible within a second of the header arriving.
+      //   2. Memory: colors live in a Uint8Array (3 B/vertex, normalized=true
+      //      on the BufferAttribute) instead of Float32 (12 B/vertex). Saves
+      //      ~113 MB of JS heap at 12.6 M vertices.
+      fetch(splatUrl, { signal: abortCtl.signal })
         .then(async (res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+          if (!res.body) throw new Error("response has no body — streaming unsupported");
           const total = Number(res.headers.get("content-length") || 0);
           pushDebug(
-            { fetchTotal: total },
-            `fetch ok status=${res.status} content-length=${total}`,
+            { fetchTotal: total, status: "fetching" },
+            `fetch ok status=${res.status} content-length=${total}; streaming`,
           );
-          const buf = await res.arrayBuffer();
+
+          const reader = res.body.getReader();
+          let tail = new Uint8Array(0);
+          let headerDone = false;
+          let count = 0;
+          let stride = 0;
+          let layout: { x: number; y: number; z: number; r: number; g: number; b: number } | null = null;
+          let positions: Float32Array | null = null;
+          let colors: Uint8Array | null = null;
+          let pointsParsed = 0;
+          let bytesRead = 0;
+          let lastFlush = performance.now();
+          const FLUSH_INTERVAL_MS = 200;
+
+          const flush = () => {
+            if (!pointGeo) return;
+            (pointGeo.attributes.position as BufferAttribute).needsUpdate = true;
+            (pointGeo.attributes.color as BufferAttribute).needsUpdate = true;
+            pointGeo.setDrawRange(0, pointsParsed);
+            dirty = true;
+            const pct = total > 0 ? Math.round((bytesRead / total) * 100) : 0;
+            pushDebug(
+              { fetchBytes: bytesRead, sceneCount: pointsParsed },
+              `streaming: ${pointsParsed.toLocaleString()}/${count.toLocaleString()} pts (${pct}%)`,
+            );
+          };
+
+          while (true) {
+            if (disposed) return;
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytesRead += value.length;
+
+            // Append new chunk to tail.
+            const next = new Uint8Array(tail.length + value.length);
+            next.set(tail);
+            next.set(value, tail.length);
+            tail = next;
+
+            // Phase 1: find end-of-header.
+            if (!headerDone) {
+              const headerEnd = findEndHeader(tail);
+              if (headerEnd < 0) continue;
+              const headerStr = new TextDecoder("ascii").decode(tail.subarray(0, headerEnd));
+              const info = parsePlyHeader(headerStr);
+              count = info.count;
+              stride = info.stride;
+              layout = info.layout;
+              positions = new Float32Array(count * 3);
+              colors = new Uint8Array(count * 3);
+
+              // Build geometry now (empty draw range) and add to scene so the
+              // user sees the cloud start to fill rather than a blank canvas.
+              pointGeo = new BufferGeometry();
+              pointGeo.setAttribute("position", new BufferAttribute(positions, 3));
+              // normalized=true → Uint8 [0,255] → vec3 [0,1] in shader for free.
+              pointGeo.setAttribute("color", new BufferAttribute(colors, 3, true));
+              pointGeo.setDrawRange(0, 0);
+              // World-unit point size; sizeAttenuation perspective-shrinks
+              // distant points. 0.0035 ≈ 3.5 mm at scene scale.
+              pointMat = new PointsMaterial({
+                size: 0.0035,
+                sizeAttenuation: true,
+                vertexColors: true,
+                transparent: false,
+                depthWrite: true,
+                depthTest: true,
+              });
+              cloud = new Points(pointGeo, pointMat);
+              cloud.frustumCulled = false; // bounds grow during stream; skip culling
+              scene.add(cloud);
+
+              tail = tail.subarray(headerEnd);
+              headerDone = true;
+              pushDebug(
+                { sceneCount: 0, status: "parsing" },
+                `header parsed: count=${count.toLocaleString()} stride=${stride}; streaming body`,
+              );
+            }
+
+            // Phase 2: parse complete vertices in tail.
+            // Coordinate frame: VGGT outputs OpenCV-convention world coords
+            // (+Y down, +Z forward). Three.js wants +Y up, +Z toward camera.
+            // Negate Y and Z (i.e. rotate 180° around X) on every position so
+            // the cloud renders right-side-up. Annotation centroids/bboxes
+            // get the matching flip in `web/app/hooks/useScene.ts` so they
+            // stay co-registered with the cloud.
+            if (positions && colors && layout) {
+              const verts = Math.min(Math.floor(tail.length / stride), count - pointsParsed);
+              if (verts > 0) {
+                const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+                const lx = layout.x, ly = layout.y, lz = layout.z;
+                const lr = layout.r, lg = layout.g, lb = layout.b;
+                for (let v = 0; v < verts; v++) {
+                  const base = v * stride;
+                  const i = pointsParsed + v;
+                  positions[i * 3] = view.getFloat32(base + lx, true);
+                  positions[i * 3 + 1] = -view.getFloat32(base + ly, true);
+                  positions[i * 3 + 2] = -view.getFloat32(base + lz, true);
+                  colors[i * 3] = tail[base + lr];
+                  colors[i * 3 + 1] = tail[base + lg];
+                  colors[i * 3 + 2] = tail[base + lb];
+                }
+                pointsParsed += verts;
+                tail = tail.subarray(verts * stride);
+              }
+            }
+
+            // Throttle GPU re-uploads to avoid thrashing on every chunk.
+            const now = performance.now();
+            if (now - lastFlush >= FLUSH_INTERVAL_MS) {
+              flush();
+              lastFlush = now;
+            }
+          }
+
+          // Final flush so the last sliver of points is visible.
+          flush();
           const fetchMs = Math.round(performance.now() - fetchStart);
           pushDebug(
-            { fetchBytes: buf.byteLength, fetchMs, status: "parsing" },
-            `fetched ${buf.byteLength} bytes in ${fetchMs}ms; parsing PLY`,
+            {
+              fetchBytes: bytesRead,
+              fetchMs,
+              sceneCount: pointsParsed,
+              status: "started",
+              startedMs: fetchMs,
+            },
+            `done: ${pointsParsed.toLocaleString()} points in ${fetchMs}ms`,
           );
 
-          const parseStart = performance.now();
-          const { positions, colors, count } = parsePly(buf);
-          if (disposed) return;
-          const parseMs = Math.round(performance.now() - parseStart);
-          pushDebug(
-            { parseMs, sceneCount: count, status: "started" },
-            `parsed ${count} points in ${parseMs}ms; building Points`,
-          );
-
-          const geom = new THREE.BufferGeometry();
-          geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-          geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-          const mat = new THREE.PointsMaterial({
-            size: 0.012,
-            vertexColors: true,
-            sizeAttenuation: true,
-            transparent: false,
-            depthWrite: true,
+          // Broadcast actual rendered stats so the pipeline panel can show
+          // them instead of (the much smaller) splat.ply Gaussian count.
+          setCloudStatsRef.current({
+            count: pointsParsed,
+            sizeMb: bytesRead / (1024 * 1024),
           });
-          const points = new THREE.Points(geom, mat);
-          scene.add(points);
-          pushDebug(
-            { startedMs: 0 },
-            `Points added to scene (size=${mat.size}m); first frame imminent`,
-          );
 
-          // Build a downsampled top-down (x,z) snapshot for the minimap.
-          const M = Math.min(8000, count);
-          const stride = Math.max(1, Math.floor(count / M));
-          const xz = new Float32Array(Math.ceil(count / stride) * 2);
-          const rgb = new Float32Array(Math.ceil(count / stride) * 3);
-          let mi = 0;
-          let minX = Infinity,
-            maxX = -Infinity,
-            minZ = Infinity,
-            maxZ = -Infinity;
-          for (let i = 0; i < count; i += stride) {
-            const x = positions[i * 3];
-            const z = positions[i * 3 + 2];
-            xz[mi * 2] = x;
-            xz[mi * 2 + 1] = z;
-            rgb[mi * 3] = colors[i * 3];
-            rgb[mi * 3 + 1] = colors[i * 3 + 1];
-            rgb[mi * 3 + 2] = colors[i * 3 + 2];
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (z < minZ) minZ = z;
-            if (z > maxZ) maxZ = z;
-            mi++;
+          // Build minimap from the now-complete cloud.
+          if (positions && colors && pointsParsed > 0) {
+            const M = Math.min(8000, pointsParsed);
+            const mstride = Math.max(1, Math.floor(pointsParsed / M));
+            const xz = new Float32Array(Math.ceil(pointsParsed / mstride) * 2);
+            const rgb = new Float32Array(Math.ceil(pointsParsed / mstride) * 3);
+            let mi = 0;
+            let minX = Infinity,
+              maxX = -Infinity,
+              minZ = Infinity,
+              maxZ = -Infinity;
+            for (let i = 0; i < pointsParsed; i += mstride) {
+              const x = positions[i * 3];
+              // positions[i*3+2] is already flipped (negated) at parse-time.
+              // For top-down minimap, undo so the orientation matches the
+              // user's mental "north = original +Z forward".
+              const z = -positions[i * 3 + 2];
+              xz[mi * 2] = x;
+              xz[mi * 2 + 1] = z;
+              rgb[mi * 3] = colors[i * 3] / 255;
+              rgb[mi * 3 + 1] = colors[i * 3 + 1] / 255;
+              rgb[mi * 3 + 2] = colors[i * 3 + 2] / 255;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (z < minZ) minZ = z;
+              if (z > maxZ) maxZ = z;
+              mi++;
+            }
+            setMiniPoints({
+              xz: xz.subarray(0, mi * 2),
+              rgb: rgb.subarray(0, mi * 3),
+              bounds: { minX, maxX, minZ, maxZ },
+            });
           }
-          setMiniPoints({
-            xz: xz.subarray(0, mi * 2),
-            rgb: rgb.subarray(0, mi * 3),
-            bounds: { minX, maxX, minZ, maxZ },
-          });
         })
         .catch((err: unknown) => {
           const e = err as Error;
+          // Don't surface AbortError — that's the cleanup path on unmount.
+          if (e?.name === "AbortError" || disposed) return;
           pushDebug(
             {
               status: "error",
@@ -538,14 +765,14 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       // Placeholder Three.js scene — friendly grid + ambient backdrop so the
       // annotation overlay still has spatial context to live in.
       const container = containerRef.current;
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      const renderer = new WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(container.clientWidth, container.clientHeight);
       renderer.setClearColor(0x0a0a0c, 1);
       container.appendChild(renderer.domElement);
 
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(
+      const scene = new Scene();
+      const camera = new PerspectiveCamera(
         45,
         container.clientWidth / container.clientHeight,
         0.05,
@@ -555,36 +782,36 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       camera.lookAt(...initial.lookAt);
 
       // Subtle radial glow + grid + bbox wireframes for each annotation
-      const grid = new THREE.GridHelper(8, 16, 0x3a3a46, 0x1a1a20);
+      const grid = new GridHelper(8, 16, 0x3a3a46, 0x1a1a20);
       grid.position.y = 0;
       scene.add(grid);
 
-      const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+      const ambient = new AmbientLight(0xffffff, 0.5);
       scene.add(ambient);
-      const dir = new THREE.DirectionalLight(0x9b85ff, 0.8);
+      const dir = new DirectionalLight(0x9b85ff, 0.8);
       dir.position.set(2, 3, 1);
       scene.add(dir);
 
       annotationsRef.current.forEach((a) => {
         const [lo, hi] = a.bbox;
-        const size = new THREE.Vector3(
+        const size = new Vector3(
           hi[0] - lo[0],
           hi[1] - lo[1],
           hi[2] - lo[2],
         );
-        const center = new THREE.Vector3(
+        const center = new Vector3(
           (lo[0] + hi[0]) / 2,
           (lo[1] + hi[1]) / 2,
           (lo[2] + hi[2]) / 2,
         );
-        const geo = new THREE.BoxGeometry(size.x, size.y, size.z);
-        const edges = new THREE.EdgesGeometry(geo);
-        const mat = new THREE.LineBasicMaterial({
-          color: new THREE.Color(a.color),
+        const geo = new BoxGeometry(size.x, size.y, size.z);
+        const edges = new EdgesGeometry(geo);
+        const mat = new LineBasicMaterial({
+          color: new Color(a.color),
           transparent: true,
           opacity: 0.85,
         });
-        const wire = new THREE.LineSegments(edges, mat);
+        const wire = new LineSegments(edges, mat);
         wire.position.copy(center);
         wire.userData.annotationId = a.id;
         scene.add(wire);
@@ -592,8 +819,8 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       });
 
       // Light orbit controls — drag to rotate around lookAt.
-      const target = new THREE.Vector3(...initial.lookAt);
-      const sph = new THREE.Spherical();
+      const target = new Vector3(...initial.lookAt);
+      const sph = new Spherical();
       sph.setFromVector3(camera.position.clone().sub(target));
       let dragging = false;
       let lastX = 0;
@@ -635,11 +862,11 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       window.addEventListener("resize", onResize);
 
       const tick = () => {
-        const offset = new THREE.Vector3().setFromSpherical(sph);
+        const offset = new Vector3().setFromSpherical(sph);
         camera.position.copy(target.clone().add(offset));
         camera.lookAt(target);
 
-        const dirVec = new THREE.Vector3();
+        const dirVec = new Vector3();
         camera.getWorldDirection(dirVec);
         setCameraRef.current(
           [camera.position.x, camera.position.y, camera.position.z],
@@ -745,45 +972,56 @@ function ControlsHint({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-3 flex flex-col items-start gap-2">
-      {open && (
-        <div className="rounded-md border border-ink-700/60 bg-ink-900/85 px-3 py-2 text-[11px] text-ink-200 backdrop-blur">
-          <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-ink-400">
-            controls
+    <>
+      {/* Help panel + toggle stays bottom-left. */}
+      <div className="pointer-events-auto absolute bottom-3 left-3 flex flex-col items-start gap-2">
+        {open && (
+          <div className="rounded-md border border-ink-700/60 bg-ink-900/85 px-3 py-2 text-[11px] text-ink-200 backdrop-blur">
+            <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-ink-400">
+              controls
+            </div>
+            <ul className="space-y-0.5">
+              <li><kbd className="font-mono opacity-80">drag</kbd> orbit</li>
+              <li><kbd className="font-mono opacity-80">shift+drag</kbd> / right-drag — pan</li>
+              <li><kbd className="font-mono opacity-80">wheel</kbd> zoom</li>
+              <li><kbd className="font-mono opacity-80">W A S D</kbd> move target</li>
+              <li><kbd className="font-mono opacity-80">Q E</kbd> up/down</li>
+              <li><kbd className="font-mono opacity-80">R</kbd> reset</li>
+            </ul>
+            {annotations.length > 0 && (
+              <>
+                <div className="mt-2 mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-400">
+                  fly to
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {annotations.slice(0, 8).map((a) => (
+                    <button
+                      key={a.id}
+                      onClick={() => onSelect(a.id)}
+                      className="rounded border border-ink-700/70 bg-ink-800/80 px-1.5 py-0.5 text-[10px] hover:border-accent-400/60 hover:text-accent-300"
+                      title={a.label}
+                    >
+                      {a.label.split(" ").slice(0, 2).join(" ")}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-          <ul className="space-y-0.5">
-            <li><kbd className="font-mono opacity-80">drag</kbd> orbit</li>
-            <li><kbd className="font-mono opacity-80">shift+drag</kbd> / right-drag — pan</li>
-            <li><kbd className="font-mono opacity-80">wheel</kbd> zoom</li>
-            <li><kbd className="font-mono opacity-80">W A S D</kbd> move target</li>
-            <li><kbd className="font-mono opacity-80">Q E</kbd> up/down</li>
-            <li><kbd className="font-mono opacity-80">R</kbd> reset</li>
-          </ul>
-          {annotations.length > 0 && (
-            <>
-              <div className="mt-2 mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-400">
-                fly to
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {annotations.slice(0, 8).map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={() => onSelect(a.id)}
-                    className="rounded border border-ink-700/70 bg-ink-800/80 px-1.5 py-0.5 text-[10px] hover:border-accent-400/60 hover:text-accent-300"
-                    title={a.label}
-                  >
-                    {a.label.split(" ").slice(0, 2).join(" ")}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-      <div className="flex gap-1">
+        )}
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="pointer-events-auto rounded-full border border-ink-700/70 bg-ink-900/80 px-2.5 py-1 font-mono text-[10px] text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
+        >
+          {open ? "× hide" : "? controls"}
+        </button>
+      </div>
+
+      {/* Zoom + reset on the right edge, just below the minimap. */}
+      <div className="pointer-events-auto absolute right-3 top-[210px] flex flex-col gap-1.5">
         <button
           onClick={onZoomIn}
-          className="size-7 rounded-full border border-ink-700/70 bg-ink-900/80 font-mono text-sm text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
+          className="size-9 rounded-md border border-ink-700/70 bg-ink-900/80 font-mono text-base text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
           title="Zoom in"
           aria-label="Zoom in"
         >
@@ -791,27 +1029,22 @@ function ControlsHint({
         </button>
         <button
           onClick={onZoomOut}
-          className="size-7 rounded-full border border-ink-700/70 bg-ink-900/80 font-mono text-sm text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
+          className="size-9 rounded-md border border-ink-700/70 bg-ink-900/80 font-mono text-base text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
           title="Zoom out"
           aria-label="Zoom out"
         >
           −
         </button>
         <button
-          onClick={() => setOpen((v) => !v)}
-          className="rounded-full border border-ink-700/70 bg-ink-900/80 px-2.5 py-1 font-mono text-[10px] text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
-        >
-          {open ? "× hide" : "? controls"}
-        </button>
-        <button
           onClick={onReset}
-          className="rounded-full border border-ink-700/70 bg-ink-900/80 px-2.5 py-1 font-mono text-[10px] text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
+          className="size-9 rounded-md border border-ink-700/70 bg-ink-900/80 font-mono text-sm text-ink-200 backdrop-blur hover:border-accent-400/60 hover:text-accent-300"
           title="Reset view (R)"
+          aria-label="Reset view"
         >
-          ↺ reset
+          ↺
         </button>
       </div>
-    </div>
+    </>
   );
 }
 

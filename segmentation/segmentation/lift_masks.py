@@ -33,6 +33,7 @@ from pathlib import Path
 import logfire
 import numpy as np
 import scipy.sparse as sp
+from PIL import Image
 
 from .lift import Cluster
 from .sam import Mask
@@ -174,11 +175,24 @@ def _ply_signature(path: Path) -> str:
     return f"{sz}-{h[:16]}"
 
 
-def _cache_key(scene_dir: Path, *, jaccard_min: float, opacity_min: float) -> dict:
+def _cache_key(
+    scene_dir: Path,
+    *,
+    jaccard_min: float,
+    opacity_min: float,
+    bg_fraction: float,
+    min_track_size: int,
+    max_clusters: int,
+    mask_count: int,
+) -> dict:
     return {
         "ply_sig": _ply_signature(scene_dir / "splat.ply"),
         "jaccard_min": jaccard_min,
         "opacity_min": opacity_min,
+        "bg_fraction": bg_fraction,
+        "min_track_size": min_track_size,
+        "max_clusters": max_clusters,
+        "mask_count": mask_count,
     }
 
 
@@ -203,6 +217,8 @@ def _cache_load(scene_dir: Path, key: dict) -> list[Cluster] | None:
                 anchor_frame=c["anchor_frame"],
                 anchor_mask_bbox=tuple(c["anchor_mask_bbox"]) if c["anchor_mask_bbox"] else None,
                 anchor_area=c["anchor_area"],
+                sources=tuple(c.get("sources", ())),
+                proposed_phrase=c.get("proposed_phrase", ""),
             )
         )
     return out
@@ -220,6 +236,8 @@ def _cache_save(scene_dir: Path, key: dict, clusters: list[Cluster]) -> None:
                 "anchor_frame": c.anchor_frame,
                 "anchor_mask_bbox": list(c.anchor_mask_bbox) if c.anchor_mask_bbox else None,
                 "anchor_area": int(c.anchor_area),
+                "sources": list(c.sources),
+                "proposed_phrase": c.proposed_phrase,
             }
             for c in clusters
         ],
@@ -237,22 +255,39 @@ def cluster_via_masks(
     opacity_min: float = 0.05,
     min_votes: int = 1,
     jaccard_min: float = 0.30,
-    bg_fraction: float = 0.30,
-    min_track_size: int = 80,
-    max_clusters: int = 12,
+    bg_fraction: float = 0.45,
+    min_track_size: int = 40,
+    max_clusters: int = 30,
 ) -> list[Cluster]:
-    """Mask-projection lift. Drop-in replacement for lift.cluster()."""
+    """Mask-projection lift. Drop-in replacement for lift.cluster().
+
+    Accepts SAM masks and VLM-proposal masks (built via proposals_to_masks)
+    interchangeably — both implement the Mask dataclass. Provenance flows into
+    each Cluster's `sources` and `proposed_phrase` fields.
+    """
+    mask_count_sam = sum(1 for m in masks if m.source == "sam")
+    mask_count_vlm = sum(1 for m in masks if m.source == "vlm")
     with logfire.span(
         "segmentation.lift.cluster",
         method="masks",
         mask_count=len(masks),
+        mask_count_sam=mask_count_sam,
+        mask_count_vlm=mask_count_vlm,
         jaccard_min=jaccard_min,
         bg_fraction=bg_fraction,
         max_clusters=max_clusters,
     ) as span:
         # Cache hit: same splat.ply + same merge thresholds → replay last result.
         try:
-            ck = _cache_key(scene_dir, jaccard_min=jaccard_min, opacity_min=opacity_min)
+            ck = _cache_key(
+                scene_dir,
+                jaccard_min=jaccard_min,
+                opacity_min=opacity_min,
+                bg_fraction=bg_fraction,
+                min_track_size=min_track_size,
+                max_clusters=max_clusters,
+                mask_count=len(masks),
+            )
             cached = _cache_load(scene_dir, ck)
         except FileNotFoundError:
             ck, cached = None, None
@@ -285,17 +320,57 @@ def cluster_via_masks(
         cameras = json.loads((scene_dir / "cameras.json").read_text())
         cam_by_frame = {c["frame"]: c for c in cameras if "frame" in c}
 
-        # Step 1: project once per frame.
+        # Step 1: project once per frame, AND build a per-frame z-buffer of
+        # the front-most Gaussian depth at every pixel. Used in step 2 to
+        # gate cluster membership to the front layer — without this, when a
+        # SAM mask covers a foreground object (e.g. a plush toy), every
+        # Gaussian on the wall behind that toy *also* projects into the same
+        # 2D pixels and gets wrongly added to the cluster, dragging the
+        # centroid halfway to the back of the room. The z-buffer approach
+        # is the standard fix and adds only ~5 ms per frame.
+        scene_extent = float(np.linalg.norm(centers_k.max(axis=0) - centers_k.min(axis=0)))
+        # Depth tolerance for "this Gaussian is on the visible surface, not
+        # behind it". Scene-relative so it scales with capture extent, with a
+        # 10 cm floor so thick-but-frontmost objects (a couch, a desk) keep
+        # their back-side Gaussians.
+        depth_eps = max(0.10, 0.02 * scene_extent)
+
         with logfire.span("segmentation.lift.project", frame_count=len(cam_by_frame)):
             proj_by_frame: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+            zbuf_by_frame: dict[str, np.ndarray] = {}
+            # Cache (h, w) per frame from any mask in that frame.
+            hw_by_frame: dict[str, tuple[int, int]] = {}
+            for m in masks:
+                hw_by_frame.setdefault(m.frame_name, m.segmentation.shape)
+
             for frame_name, cam in cam_by_frame.items():
                 ext = np.asarray(cam["extrinsic"], dtype=np.float32)
                 intr = np.asarray(cam["intrinsic"], dtype=np.float32)
                 u, v, z = _project_all(centers_k, ext, intr)
                 proj_by_frame[frame_name] = (u, v, z)
+                hw = hw_by_frame.get(frame_name)
+                if hw is None:
+                    continue
+                h, w = hw
+                # np.minimum.at handles duplicate (v, u) indices correctly,
+                # accumulating the per-pixel min(z) across all in-bounds
+                # Gaussians. Inf for empty pixels.
+                zbuf = np.full((h, w), np.inf, dtype=np.float32)
+                in_bounds = (u >= 0) & (u < w) & (v >= 0) & (v < h) & (z > 1e-6)
+                if in_bounds.any():
+                    bidx = np.flatnonzero(in_bounds)
+                    np.minimum.at(zbuf, (v[bidx], u[bidx]), z[bidx])
+                zbuf_by_frame[frame_name] = zbuf
 
-        # Step 2: per-mask Gaussian set (indices into the kept array).
-        with logfire.span("segmentation.lift.hits", mask_count=len(masks)):
+        # Step 2: per-mask Gaussian set (indices into the kept array). Now
+        # gated by the per-frame z-buffer so only front-layer Gaussians (the
+        # ones actually visible at that pixel in that frame) make it into
+        # the cluster.
+        with logfire.span(
+            "segmentation.lift.hits",
+            mask_count=len(masks),
+            depth_eps=depth_eps,
+        ):
             mask_member_lists: list[np.ndarray] = []
             kept_masks: list[Mask] = []
             for m in masks:
@@ -311,7 +386,13 @@ def cluster_via_masks(
                     kept_masks.append(m)
                     continue
                 seg_hits = m.segmentation[v[idx], u[idx]]
-                members = idx[seg_hits]
+                zbuf = zbuf_by_frame.get(m.frame_name)
+                if zbuf is not None:
+                    zhit = zbuf[v[idx], u[idx]]
+                    visible = z[idx] <= (zhit + depth_eps)
+                    members = idx[seg_hits & visible]
+                else:
+                    members = idx[seg_hits]
                 mask_member_lists.append(members.astype(np.int64))
                 kept_masks.append(m)
 
@@ -344,17 +425,58 @@ def cluster_via_masks(
         ranked.sort(key=lambda t: t[0], reverse=True)
 
         clusters: list[Cluster] = []
+        dropped_min_track = 0
+        dropped_max_clusters = max(0, len(ranked) - max_clusters)
+        sourced_sam = sourced_vlm = sourced_both = 0
         for cid_zero, (_, g) in enumerate(ranked[:max_clusters]):
             union = np.unique(np.concatenate([filtered[i] for i in g]))
             if union.size < min_track_size:
+                dropped_min_track += 1
                 continue
             global_idx = kept_idx[union]
             pts = centers[global_idx]
+
+            # Robust centroid: drop residual outliers via MAD (median + 2.5σ).
+            # The depth z-buffer in step 2 catches occlusion-bleed Gaussians;
+            # this catches the long-tail noise from depth-prediction wisps
+            # near silhouette edges. Cheap (~5 ms per cluster) and keeps the
+            # centroid pinned to the dense core of the object.
+            if pts.shape[0] >= 16:
+                median_xyz = np.median(pts, axis=0)
+                dist = np.linalg.norm(pts - median_xyz, axis=1)
+                mad = float(np.median(dist))
+                if mad > 1e-6:
+                    sigma = mad * 1.4826
+                    inliers = dist < (sigma * 2.5)
+                    if inliers.sum() >= max(8, min_track_size // 2):
+                        pts = pts[inliers]
+                        global_idx = global_idx[inliers]
+
             centroid = pts.mean(axis=0)
             bbox_lo = pts.min(axis=0)
             bbox_hi = pts.max(axis=0)
-            anchor_local = max(g, key=lambda i: filtered_masks[i].area)
+            # Anchor: prefer real SAM masks for tight crops; VLM bboxes are loose
+            # rectangles. Fall back to VLM if no SAM mask is in the group.
+            sam_in_group = [i for i in g if filtered_masks[i].source == "sam"]
+            anchor_pool = sam_in_group if sam_in_group else g
+            anchor_local = max(anchor_pool, key=lambda i: filtered_masks[i].area)
             anchor = filtered_masks[anchor_local]
+
+            sources_set = sorted({filtered_masks[i].source for i in g})
+            # Best VLM phrase in the group: highest proposal_confidence.
+            vlm_members = [filtered_masks[i] for i in g if filtered_masks[i].source == "vlm"]
+            proposed_phrase = ""
+            if vlm_members:
+                best = max(vlm_members, key=lambda m: m.proposal_confidence)
+                proposed_phrase = best.phrase
+
+            if "sam" in sources_set and "vlm" in sources_set:
+                sourced_both += 1
+            elif "sam" in sources_set:
+                sourced_sam += 1
+            elif "vlm" in sources_set:
+                sourced_vlm += 1
+
             clusters.append(
                 Cluster(
                     id=f"obj_{cid_zero + 1:03d}",
@@ -367,13 +489,72 @@ def cluster_via_masks(
                     anchor_frame=anchor.frame_name,
                     anchor_mask_bbox=anchor.bbox,
                     anchor_area=int(anchor.area),
+                    sources=tuple(sources_set),
+                    proposed_phrase=proposed_phrase,
                 )
             )
 
         span.set_attribute("cluster_count", len(clusters))
+        span.set_attribute("dropped_by_min_track_size", dropped_min_track)
+        span.set_attribute("dropped_by_max_clusters", dropped_max_clusters)
+        span.set_attribute("cluster_count_sam_only", sourced_sam)
+        span.set_attribute("cluster_count_vlm_only", sourced_vlm)
+        span.set_attribute("cluster_count_both", sourced_both)
         if ck is not None:
             try:
                 _cache_save(scene_dir, ck, clusters)
             except OSError:
                 pass
         return clusters
+
+
+# ─── VLM proposal bridge ──────────────────────────────────────────────────
+
+
+def proposals_to_masks(
+    proposals,  # list[proposer.Proposal] — typed loosely to avoid import cycle
+    scene_dir: Path,
+) -> list[Mask]:
+    """Convert each VLM (frame, normalized-bbox) proposal into a rectangular
+    boolean Mask in image-pixel coords so it flows through cluster_via_masks
+    like a SAM mask. Sets Mask.source='vlm', Mask.phrase, Mask.proposal_confidence.
+
+    Image dimensions are read from the actual frame on disk (not cameras.json,
+    whose intrinsics may have been rescaled). Reads each frame at most once.
+    """
+    frame_dir = scene_dir / "frames"
+    dim_cache: dict[str, tuple[int, int]] = {}  # frame_name -> (W, H)
+    out: list[Mask] = []
+    for j, p in enumerate(proposals):
+        if p.frame_name not in dim_cache:
+            fp = frame_dir / p.frame_name
+            if not fp.exists():
+                continue
+            with Image.open(fp) as im:
+                dim_cache[p.frame_name] = (im.width, im.height)
+        W, H = dim_cache[p.frame_name]
+        bx, by, bw, bh = p.bbox_norm
+        x = max(0, int(round(bx * W)))
+        y = max(0, int(round(by * H)))
+        w = max(1, min(W - x, int(round(bw * W))))
+        h = max(1, min(H - y, int(round(bh * H))))
+        if w <= 0 or h <= 0:
+            continue
+        seg = np.zeros((H, W), dtype=bool)
+        seg[y : y + h, x : x + w] = True
+        out.append(
+            Mask(
+                frame_idx=-1,
+                frame_name=p.frame_name,
+                mask_id=j,
+                segmentation=seg,
+                bbox=(x, y, w, h),
+                area=int(w * h),
+                confidence=float(p.confidence),
+                source="vlm",
+                prompt="",
+                phrase=p.phrase,
+                proposal_confidence=float(p.confidence),
+            )
+        )
+    return out

@@ -9,6 +9,28 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      # Cloudflare R2 — required for r2 mode (production path)
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_UPLOADS_BUCKET
+        value: glasses-twin-uploads
+      - key: R2_ARTIFACTS_BUCKET
+        value: glasses-twin-artifacts
+      - key: R2_ARTIFACTS_PUBLIC_BASE
+        sync: false
+      # Modal endpoint URLs (printed by `modal deploy inference/modal_app.py`)
+      - key: MODAL_PROCESS_VIDEO_URL
+        sync: false
+      - key: MODAL_GET_MANIFEST_URL
+        sync: false
+      # Allowed CORS origins (comma-separated)
+      - key: CORS_ORIGINS
+        sync: false
+      # Existing
       - key: PYDANTIC_GATEWAY_URL
         sync: false
       - key: PYDANTIC_GATEWAY_KEY
@@ -26,14 +48,20 @@ services:
 
   - type: web
     name: glasses-twin-web
-    runtime: static
+    runtime: node
+    plan: starter
     buildCommand: pnpm install && pnpm --filter web build
-    staticPublishPath: ./web/dist
+    startCommand: pnpm --filter web start
+    rootDir: .
     pullRequestPreviewsEnabled: true
     envVars:
-      - key: VITE_AGENT_URL
+      - key: NODE_VERSION
+        value: 20
+      - key: NEXT_PUBLIC_AGENT_URL
         sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+      - key: NEXT_PUBLIC_R2_ARTIFACTS_PUBLIC_BASE
+        sync: false
+      - key: NEXT_PUBLIC_MODAL_GET_ARTIFACT_URL
+        sync: false
+      - key: NEXT_PUBLIC_DEFAULT_MODE
+        value: r2

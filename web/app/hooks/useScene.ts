@@ -1,7 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchAnnotations, fetchManifest, fetchSplatUrl } from "@/lib/api";
+import type { Annotation, BBox, Vec3 } from "@/lib/types";
 
 const POLL_MS = 2000;
+
+// VGGT outputs OpenCV-convention world coords (+Y down, +Z forward). The
+// SplatViewer parser flips Y and Z on every point so the cloud renders
+// right-side-up in Three.js (+Y up, +Z toward camera). Annotation centroids
+// and bboxes are produced in the same world frame upstream, so they need
+// the same flip — otherwise labels would float above/behind the wrong
+// objects.
+function flipPoint(p: Vec3): Vec3 {
+  return [p[0], -p[1], -p[2]];
+}
+function flipBBox(b: BBox): BBox {
+  // After negating Y and Z, the original lo/hi corners swap on those axes.
+  // Re-establish the lo[i] <= hi[i] invariant by mixing components.
+  return [
+    [b[0][0], -b[1][1], -b[1][2]],
+    [b[1][0], -b[0][1], -b[0][2]],
+  ];
+}
+function flipAnnotation(a: Annotation): Annotation {
+  return { ...a, centroid: flipPoint(a.centroid), bbox: flipBBox(a.bbox) };
+}
 
 export function useScene(sceneId: string) {
   const manifest = useQuery({
@@ -26,7 +48,7 @@ export function useScene(sceneId: string) {
 
   const annotations = useQuery({
     queryKey: ["annotations", sceneId],
-    queryFn: () => fetchAnnotations(sceneId),
+    queryFn: async () => (await fetchAnnotations(sceneId)).map(flipAnnotation),
     enabled: segReady,
   });
 

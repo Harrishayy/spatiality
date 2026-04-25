@@ -14,7 +14,7 @@ Topology:
 
 Deploy:
   uv run modal deploy inference/modal_app.py
-  # First deploy: ~20-30 min (3DGRUT tiny-cuda-nn compile). Subsequent: <2 min.
+  # First deploy: ~3-5 min (SAM 3.1 CUDA kernels + VGGT clone). Subsequent: <2 min.
 
 Required Modal Secrets (one-time setup):
   modal secret create logfire LOGFIRE_TOKEN=pylf_v...
@@ -37,24 +37,26 @@ artifacts_volume = modal.Volume.from_name("glasses-twin-artifacts", create_if_mi
 weights_volume = modal.Volume.from_name("glasses-twin-weights", create_if_missing=True)
 
 # ── Image ──────────────────────────────────────────────────────────────────
-# Heavy: clones VGGT + 3DGRUT, compiles tiny-cuda-nn (~20 min first deploy).
-# Local repo packages are added last so source edits don't bust the CUDA cache.
+# Clones VGGT + installs SAM 3.1 (~3-5 min first deploy). gsplat / fused-ssim
+# are gone — VGGT's depth+camera heads feed a NumPy-only surfel synthesiser,
+# no CUDA training kernels needed for the splat stage. Local repo packages
+# are added last so source edits don't bust the CUDA cache.
 image = (
-    # CUDA 12.4 devel base — has nvcc + CUDA toolkit so fused-ssim and 3DGRUT
-    # tiny-cuda-nn can compile their kernels at build time. debian_slim doesn't.
+    # CUDA 12.4 devel base — has nvcc + CUDA toolkit so SAM 3.1 can compile
+    # its kernels at build time. debian_slim doesn't.
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .env({"CUDA_HOME": "/usr/local/cuda", "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9;9.0"})
     .apt_install("git", "build-essential", "ffmpeg", "libgl1", "libglib2.0-0", "wget", "clang")
     .pip_install(
-        # Build helpers — needed for --no-build-isolation installs of fused-ssim,
-        # sam3, and 3DGRUT (their setup.py invokes bdist_wheel which needs `wheel`).
+        # Build helpers — needed for --no-build-isolation install of sam3
+        # (its setup.py invokes bdist_wheel which needs `wheel`).
         "wheel",
         "setuptools",
-        # GPU stack — pin to the 3DGRUT-known-good torch.
+        # GPU stack — torch 2.4.0 + cu124 matches the SAM 3.1 build target.
         "torch==2.4.0",
         "torchvision==0.19.0",
         "numpy<2",
-        "opencv-python-headless<4.12",  # 3DGRUT pin (numpy<2)
+        "opencv-python-headless<4.12",
         "pillow",
         "scipy",
         "scikit-image",
@@ -64,28 +66,8 @@ image = (
         "safetensors",
         "imageio",
         "imageio-ffmpeg",
-        # 3DGRUT runtime deps — full set from bundle/src/3dgrut/requirements.txt
-        # so the import path doesn't fail at runtime. Skip kaolin (NVIDIA find-links,
-        # fragile) — 3DGRUT only needs it for some dataset loaders we don't use.
-        "ninja",
+        # PLY I/O — segmentation/splat_io.py reads gaussian centers from splat.ply.
         "plyfile",
-        "trimesh",
-        "hydra-core",
-        "omegaconf",
-        "torchmetrics",
-        "tensorboard",
-        "fire",
-        "addict",
-        "rich",
-        "slangtorch==1.3.18",
-        "piexif",
-        "kornia",
-        "msgpack",
-        "dataclasses-json",
-        "tqdm",
-        "libigl",
-        "pygltflib",
-        "wandb",
         # Pipeline plumbing
         "pydantic>=2.7",
         "pyyaml>=6",
@@ -95,30 +77,32 @@ image = (
         # Segmentation
         "anthropic>=0.39",
         "scikit-learn>=1.5",
-    )
-    # fused-ssim and sam3 both have setup.py that imports torch — use --no-build-isolation
-    # so they see the torch we installed in the previous layer (PEP 517's isolated venv
-    # is otherwise a fresh env where `import torch` fails). pip_install() doesn't
-    # expose this flag, so we use run_commands() with explicit pip install.
-    .run_commands(
-        "pip install --no-build-isolation 'fused-ssim @ git+https://github.com/rahul-goel/fused-ssim@1272e21a282342e89537159e4bad508b19b34157'",
+        # R2 / S3 — used by process_video to pull uploaded videos and by
+        # _mirror_to_r2 to push finished artifacts to the public bucket.
+        "boto3>=1.34",
     )
     # SAM 3.1 — sole segmentation backend (per plans/modules/03_segmentation.md).
     # Public Python package on GitHub; weights are gated and pulled from HF at
     # runtime by segmentation/sam.py (see SAM3_HF_REPO + HF_SECRET).
-    # Requires CUDA + torch at build time.
+    # Requires CUDA + torch at build time. --no-build-isolation so it sees the
+    # torch we just installed (PEP 517's isolated venv would re-fetch it).
     .run_commands(
         "pip install --no-build-isolation 'sam3 @ git+https://github.com/facebookresearch/sam3.git'",
     )
     .run_commands(
         "git clone --depth 1 https://github.com/facebookresearch/vggt.git /opt/vggt",
         "pip install --no-build-isolation --no-deps -e /opt/vggt",
-        "git clone --depth 1 --recursive https://github.com/nv-tlabs/3dgrut.git /opt/3dgrut",
-        # 3DGRUT compile — tiny-cuda-nn + cutlass. Slow (~15-20 min first time).
-        "pip install --no-build-isolation --no-deps -e /opt/3dgrut",
+    )
+    # FastVGGT (mystorm16/FastVGGT) — token-merging fork of vanilla VGGT.
+    # Cloned, NOT pip-installed: it shares the `vggt` package name so a pip
+    # install would clobber the vanilla install above. fastvggt.py adds
+    # /opt/fastvggt to sys.path at import time so `import vggt` resolves to
+    # the fork only inside the FastVGGT-backed subprocess.
+    .run_commands(
+        "git clone --depth 1 https://github.com/mystorm16/FastVGGT.git /opt/fastvggt",
     )
     # Late-layered tail-pip deps. Adding here keeps the heavy CUDA-compile
-    # layers above (fused-ssim / sam3 / 3DGRUT) cached across rebuilds.
+    # layer above (sam3) cached across rebuilds.
     #
     # SAM 3.1's `pip install --no-build-isolation 'sam3 @ git+...'` doesn't
     # pull declared runtime deps, and its module-load chain ALSO crosses
@@ -153,16 +137,55 @@ image = (
 COMMON_ENV = {
     "ARTIFACTS_PATH": "/artifacts",
     "VGGT_LOCAL_WEIGHTS": "/weights/vggt.pt",
-    "THREEDGRUT_ROOT": "/opt/3dgrut",
     # SAM 3.1 — sole segmentation backend. Weights live in a gated HF repo;
     # segmentation/sam.py snapshot-downloads them to SAM3_SNAPSHOT_DIR on first
     # call (HF_TOKEN secret required, attached to the segmentation function).
     "SAM3_CONFIG": "sam3_hiera_l.yaml",
     "SAM3_HF_REPO": "facebook/sam3.1",
     "SAM3_SNAPSHOT_DIR": "/weights/sam3-snapshot",
-    # Inference quality knobs — higher values mean denser splats / more frames.
-    "VGGT_POINTS_MAX": "500000",
-    "VGGT_POINTS_CONF_MIN": "0.4",
+    # VGGT frame selection — VGGT is O(N²); per upstream README, 100 frames
+    # ≈ 21 GB / ~3 s on H100, comfortably under H100-80GB. 100 frames is the
+    # sweet spot: well past the 16-32 view quality saturation knee with
+    # plenty of parallax diversity, while keeping forward + surfel-synthesis
+    # CPU work bounded. Bump to 200 only if a specific scene has visible
+    # holes at 100.
+    "VGGT_FRAMES_MAX": "100",
+    "VGGT_FRAMES_MIN": "8",
+    "VGGT_FPS_TARGET": "4.0",
+    "VGGT_BLUR_DROP_PCT": "0.20",
+    # Per-pixel surfel gates.
+    "VGGT_DEPTH_CONF_MIN": "0.2",
+    "VGGT_DEPTH_GRAD_MAX": "0.04",
+    # Surfel pixel footprint — how many source pixels each surfel covers.
+    # Larger = more overlap between neighbours = surfaces look filled, not speckly.
+    "VGGT_SURFEL_PIXEL_FOOTPRINT": "4.0",
+    # Edge-preserving depth smoothing (bilateral filter; D=0 to disable).
+    "VGGT_DEPTH_BILATERAL_D": "5",
+    "VGGT_DEPTH_BILATERAL_SIGMA_S": "50.0",
+    "VGGT_DEPTH_BILATERAL_SIGMA_R": "0.05",
+    # Sky / distant-background cap — drop pixels above this percentile of
+    # per-frame valid depths × the multiplier.
+    "VGGT_DEPTH_FAR_PCT": "95.0",
+    "VGGT_DEPTH_FAR_MULT": "1.5",
+    # Voxel downsample as a fraction of scene diagonal — controls splat count.
+    # 0.002 targets ~1-1.5M Gaussians, the visual sweet spot under the viewer's
+    # 2M cap. (Was 0.005 → ~200k, too sparse.)
+    "VGGT_VOXEL_SIZE_FRAC": "0.002",
+    # ── FastVGGT path (token-merging fork; opt-in via backend=fastvggt) ──
+    # Pushes the frame budget up by ~15× — the speedup is what makes large
+    # frame counts tractable. All other surfel/depth knobs above (VGGT_DEPTH_*,
+    # VGGT_SURFEL_*, VGGT_VOXEL_*) are reused by both backends; only
+    # frame-selection + token-merge knobs are FastVGGT-specific.
+    "FASTVGGT_FRAMES_MAX": "700",
+    "FASTVGGT_FRAMES_MIN": "16",
+    "FASTVGGT_FPS_TARGET": "10.0",
+    "FASTVGGT_BLUR_DROP_PCT": "0.20",
+    "FASTVGGT_MERGING": "0",
+    "FASTVGGT_MERGE_RATIO": "0.9",
+    "FASTVGGT_REPO_PATH": "/opt/fastvggt",
+    # Default backend for run_inference / _inference_async. Per-request override
+    # is via payload.backend.
+    "INFERENCE_BACKEND": "vggt",
 }
 
 LOGFIRE_SECRET = modal.Secret.from_name("logfire", required_keys=["LOGFIRE_TOKEN"])
@@ -170,104 +193,203 @@ GATEWAY_SECRET = modal.Secret.from_name(
     "pydantic-gateway", required_keys=["PYDANTIC_GATEWAY_KEY", "PYDANTIC_GATEWAY_URL"]
 )
 HF_SECRET = modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])
+# R2 credentials. Optional — when bucket envs are unset the mirror helper is a
+# no-op and process_video only accepts source.kind="local". Create with:
+#   modal secret create r2-credentials \
+#     R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... \
+#     R2_UPLOADS_BUCKET=glasses-twin-uploads R2_ARTIFACTS_BUCKET=glasses-twin-artifacts
+R2_SECRET = modal.Secret.from_name("r2-credentials")
 
 
 @app.function(
     image=image,
-    gpu="A100-80GB",
-    timeout=900,
+    gpu="H100",
+    timeout=1800,
     volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
-    secrets=[LOGFIRE_SECRET],
+    secrets=[LOGFIRE_SECRET, R2_SECRET],
     cpu=4.0,
     memory=16384,
 )
 @modal.fastapi_endpoint(method="POST", label="run-inference")
 def run_inference(payload: dict) -> dict:
-    """VGGT poses → 3DGRUT splat, with a volume commit between each stage so
-    the web sees cameras.json the moment poses finishes and splat.ply the
-    moment training finishes — without waiting for segmentation.
+    """VGGT poses + per-pixel surfel synthesis. Two stages with a volume
+    commit between them so the web sees cameras.json the moment poses
+    finishes and splat.ply the moment surfel synthesis finishes — without
+    waiting for segmentation.
 
     Auto-spawns run_segmentation as fire-and-forget once splat is on disk
     (controlled by payload.segment, default true).
 
     POST body:
-      {"scene_id": "...", "iterations": 7000, "keyframes": 5, "segment": true}
+      {"scene_id": "...", "keyframes": 5, "segment": true,
+       "backend": "vggt" | "fastvggt"}
     """
+    scene_id = payload["scene_id"]
+    keyframes = int(payload.get("keyframes", 5))
+    segment = bool(payload.get("segment", True))
+    backend = payload.get("backend")
+    return _run_inference_impl(scene_id, keyframes, segment, backend)
+
+
+@app.function(
+    image=image,
+    gpu="H100",
+    timeout=1800,
+    volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
+    secrets=[LOGFIRE_SECRET, R2_SECRET],
+    cpu=4.0,
+    memory=16384,
+)
+def _inference_async(
+    scene_id: str,
+    keyframes: int = 5,
+    segment: bool = True,
+    backend: str | None = None,
+) -> dict:
+    """Plain (non-fastapi) entrypoint so process_video can `.spawn()` inference.
+
+    Same body as run_inference; split because @modal.fastapi_endpoint functions
+    can't be invoked via .spawn() (mirrors the run_segmentation / _segment_async
+    pair below).
+    """
+    return _run_inference_impl(scene_id, keyframes, segment, backend)
+
+
+def _run_inference_impl(
+    scene_id: str,
+    keyframes: int,
+    segment: bool,
+    backend: str | None = None,
+) -> dict:
     import os
     import subprocess
 
-    scene_id = payload["scene_id"]
-    iterations = int(payload.get("iterations", 7000))
-    keyframes = int(payload.get("keyframes", 5))
-    segment = bool(payload.get("segment", True))
+    import logfire
+    from shared.observability import (  # type: ignore
+        SPAN_MODAL_RUN_INFERENCE,
+        configure_logfire,
+    )
+
+    configure_logfire("modal-inference")
 
     env = os.environ.copy()
     env.update(COMMON_ENV)
+    # Per-request override beats env default; falls back to COMMON_ENV's
+    # INFERENCE_BACKEND ("vggt") when neither is set.
+    resolved_backend = backend or env.get("INFERENCE_BACKEND", "vggt")
+    if resolved_backend not in ("vggt", "fastvggt"):
+        raise ValueError(f"unknown backend: {resolved_backend!r}")
+    env["INFERENCE_BACKEND"] = resolved_backend
 
-    # Volume.reload() makes sure we see whatever /agent just uploaded.
-    artifacts_volume.reload()
+    with logfire.span(
+        SPAN_MODAL_RUN_INFERENCE,
+        scene_id=scene_id,
+        backend=resolved_backend,
+        keyframes=keyframes,
+        segment=segment,
+    ) as span:
+        # Volume.reload() makes sure we see whatever /agent just uploaded.
+        artifacts_volume.reload()
 
-    # Capture frames are uploaded by /agent before we run; mark complete so
-    # the web's PipelineProgress shows it as done from t=0.
-    _stage_complete(scene_id, "capture")
-    _set_top_status(scene_id, "processing")
-    artifacts_volume.commit()
-
-    # ── Stage 1: poses (VGGT) ───────────────────────────────────────────
-    poses_cmd = [
-        "python", "-m", "inference",
-        "--scene-id", scene_id,
-        "--real",
-        "--stage", "poses",
-        "--iterations", str(iterations),
-    ]
-    try:
-        subprocess.run(poses_cmd, check=True, env=env)
-    except subprocess.CalledProcessError as exc:
-        _stage_failed(scene_id, "poses", str(exc))
-        _set_top_status(scene_id, "failed")
+        # Capture frames are uploaded before we run; mark complete so the web's
+        # PipelineProgress shows it as done from t=0. (process_video sets this
+        # too, but run_inference's existing callers may not have.)
+        _stage_complete(scene_id, "capture")
+        _set_top_status(scene_id, "processing")
         artifacts_volume.commit()
-        raise
-    # cli.py already wrote stages.poses.status=complete + cameras.json.
-    artifacts_volume.commit()
+        _mirror_manifest(scene_id)
 
-    # ── Stage 2: splat (3DGRUT) ─────────────────────────────────────────
-    splat_cmd = [
-        "python", "-m", "inference",
-        "--scene-id", scene_id,
-        "--real",
-        "--stage", "splat",
-        "--iterations", str(iterations),
-    ]
-    try:
-        subprocess.run(splat_cmd, check=True, env=env)
-    except subprocess.CalledProcessError as exc:
-        _stage_failed(scene_id, "splat", str(exc))
-        _set_top_status(scene_id, "failed")
+        # ── Stage 1: poses (VGGT depth + camera + per-pixel surfel synth) ───
+        _run_pipeline_subprocess(
+            scene_id=scene_id,
+            stage="poses",
+            cmd=[
+                "python", "-m", "inference",
+                "--scene-id", scene_id,
+                "--real",
+                "--stage", "poses",
+                "--backend", resolved_backend,
+            ],
+            env=env,
+        )
         artifacts_volume.commit()
-        raise
-    # cli.py already wrote stages.splat.status=complete + flipped status=ready.
-    artifacts_volume.commit()
+        _mirror_manifest(scene_id)
+        _mirror_artifacts(scene_id, ["cameras.json", "points.ply"])
 
-    # ── Stage 3: segmentation, fire-and-forget ──────────────────────────
-    spawned = False
-    if segment:
+        # ── Stage 2: splat (voxel-downsample surfels.npz → splat.ply) ───────
+        # splat stage doesn't read the model so backend choice is informational
+        # (stamps the manifest with the matching method string).
+        _run_pipeline_subprocess(
+            scene_id=scene_id,
+            stage="splat",
+            cmd=[
+                "python", "-m", "inference",
+                "--scene-id", scene_id,
+                "--real",
+                "--stage", "splat",
+                "--backend", resolved_backend,
+            ],
+            env=env,
+        )
+        artifacts_volume.commit()
+        _mirror_manifest(scene_id)
+        _mirror_artifacts(scene_id, ["splat.ply"])
+
+        # ── Stage 3: segmentation, fire-and-forget ──────────────────────────
+        spawned = False
+        if segment:
+            try:
+                _segment_async.spawn(scene_id, keyframes)
+                spawned = True
+            except Exception as exc:
+                print(f"segmentation spawn failed: {exc!r}", flush=True)
+                span.set_attribute("segmentation_spawn_error", str(exc)[:200])
+
+        span.set_attribute("segmentation_spawned", spawned)
+        return {
+            "status": "ok",
+            "scene_id": scene_id,
+            "segmentation_spawned": spawned,
+        }
+
+
+def _run_pipeline_subprocess(
+    *, scene_id: str, stage: str, cmd: list[str], env: dict
+) -> None:
+    """Run a pipeline subprocess inside a `modal.subprocess` span.
+
+    Captures stderr on failure so the failing trace carries the exception
+    text instead of just the exit code. The inference / segmentation
+    Python CLIs emit their own pipeline spans (inference.vggt, segmentation.sam3,
+    ...) which appear nested under the run.* parent in the trace UI.
+    """
+    import subprocess
+
+    import logfire
+
+    with logfire.span(
+        f"modal.subprocess.{stage}",
+        scene_id=scene_id,
+        stage=stage,
+        argv=" ".join(cmd),
+    ) as span:
         try:
-            # _segment_async is a plain @app.function — fastapi_endpoint
-            # wrappers can't be invoked via .spawn(); the runbook calls this
-            # out at MODAL_RUNBOOK.md:160. The first run hit that and 500'd
-            # at the end despite splat being on disk.
-            _segment_async.spawn(scene_id, keyframes)
-            spawned = True
-        except Exception as exc:
-            print(f"segmentation spawn failed: {exc!r}", flush=True)
-
-    return {
-        "status": "ok",
-        "scene_id": scene_id,
-        "iterations": iterations,
-        "segmentation_spawned": spawned,
-    }
+            proc = subprocess.run(
+                cmd, check=True, env=env, capture_output=True, text=True
+            )
+        except subprocess.CalledProcessError as exc:
+            span.set_attribute("returncode", exc.returncode)
+            span.set_attribute("stderr_tail", (exc.stderr or "")[-2000:])
+            span.set_attribute("stdout_tail", (exc.stdout or "")[-1000:])
+            _stage_failed(scene_id, stage, f"exit {exc.returncode}: {(exc.stderr or '')[-300:]}")
+            _set_top_status(scene_id, "failed")
+            artifacts_volume.commit()
+            _mirror_manifest(scene_id)
+            raise
+        span.set_attribute("returncode", proc.returncode)
+        # Stdout tail is useful evidence ("vggt: 240 frames -> ..."); cap it.
+        if proc.stdout:
+            span.set_attribute("stdout_tail", proc.stdout[-1000:])
 
 
 @app.function(
@@ -275,7 +397,7 @@ def run_inference(payload: dict) -> dict:
     gpu="A100-80GB",
     timeout=600,
     volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
-    secrets=[LOGFIRE_SECRET, GATEWAY_SECRET, HF_SECRET],
+    secrets=[LOGFIRE_SECRET, GATEWAY_SECRET, HF_SECRET, R2_SECRET],
     cpu=4.0,
     memory=16384,
 )
@@ -294,7 +416,7 @@ def _segment_async(scene_id: str, keyframes: int) -> dict:
     gpu="A100-80GB",
     timeout=600,
     volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
-    secrets=[LOGFIRE_SECRET, GATEWAY_SECRET, HF_SECRET],
+    secrets=[LOGFIRE_SECRET, GATEWAY_SECRET, HF_SECRET, R2_SECRET],
     cpu=4.0,
     memory=16384,
 )
@@ -318,31 +440,44 @@ def _segment_impl(scene_id: str, keyframes: int) -> dict:
     immediately) and once after (so annotations.json appears atomically).
     """
     import os
-    import subprocess
+
+    import logfire
+    from shared.observability import (  # type: ignore
+        SPAN_MODAL_RUN_SEGMENTATION,
+        configure_logfire,
+    )
+
+    configure_logfire("modal-segmentation")
 
     env = os.environ.copy()
     env.update(COMMON_ENV)
 
-    artifacts_volume.reload()
+    with logfire.span(
+        SPAN_MODAL_RUN_SEGMENTATION,
+        scene_id=scene_id,
+        keyframes=keyframes,
+    ):
+        artifacts_volume.reload()
 
-    _stage_running(scene_id, "segmentation")
-    artifacts_volume.commit()
-
-    cmd = [
-        "python", "-m", "segmentation",
-        "--scene-id", scene_id,
-        "--real",
-        "--keyframes", str(keyframes),
-    ]
-    try:
-        subprocess.run(cmd, check=True, env=env)
-    except subprocess.CalledProcessError as exc:
-        _stage_failed(scene_id, "segmentation", str(exc))
+        _stage_running(scene_id, "segmentation")
         artifacts_volume.commit()
-        raise
 
-    artifacts_volume.commit()
-    return {"status": "ok", "scene_id": scene_id, "keyframes": keyframes}
+        _run_pipeline_subprocess(
+            scene_id=scene_id,
+            stage="segmentation",
+            cmd=[
+                "python", "-m", "segmentation",
+                "--scene-id", scene_id,
+                "--real",
+                "--keyframes", str(keyframes),
+            ],
+            env=env,
+        )
+
+        artifacts_volume.commit()
+        _mirror_manifest(scene_id)
+        _mirror_artifacts(scene_id, ["annotations.json", "thumbnail.jpg"])
+        return {"status": "ok", "scene_id": scene_id, "keyframes": keyframes}
 
 
 def _manifest_path(scene_id: str) -> str:
@@ -414,39 +549,507 @@ def prepare_scene(payload: dict) -> dict:
     from datetime import datetime, timezone
 
     os.environ.update(COMMON_ENV)
+    import logfire
+    from shared.observability import (  # type: ignore
+        SPAN_MODAL_PREPARE_SCENE,
+        configure_logfire,
+    )
     from shared.schemas import Manifest, Stages, Stage, Artifacts, Stats
 
+    configure_logfire("modal-prepare")
+
     scene_id = payload["scene_id"]
-    artifacts_volume.reload()
-    scene_dir = f"/artifacts/scenes/{scene_id}"
-    os.makedirs(f"{scene_dir}/frames", exist_ok=True)
-    manifest_path = f"{scene_dir}/manifest.json"
+    with logfire.span(SPAN_MODAL_PREPARE_SCENE, scene_id=scene_id) as span:
+        artifacts_volume.reload()
+        scene_dir = f"/artifacts/scenes/{scene_id}"
+        os.makedirs(f"{scene_dir}/frames", exist_ok=True)
+        manifest_path = f"{scene_dir}/manifest.json"
 
-    if os.path.exists(manifest_path):
-        return {"status": "exists", "manifest": json.loads(open(manifest_path).read())}
+        if os.path.exists(manifest_path):
+            span.set_attribute("manifest_state", "exists")
+            return {"status": "exists", "manifest": json.loads(open(manifest_path).read())}
 
-    base = f"/artifacts/scenes/{scene_id}"
-    Manifest(
+        base = f"/artifacts/scenes/{scene_id}"
+        Manifest(
+            scene_id=scene_id,
+            created_at=datetime.now(timezone.utc),
+            status="queued",
+            stages=Stages(
+                capture=Stage(status="pending"),
+                poses=Stage(status="pending"),
+                splat=Stage(status="pending"),
+                segmentation=Stage(status="pending"),
+            ),
+            artifacts=Artifacts(
+                splat_ply=f"{base}/splat.ply",
+                annotations_json=f"{base}/annotations.json",
+                thumbnail_jpg=f"{base}/thumbnail.jpg",
+                cameras_json=f"{base}/cameras.json",
+            ),
+            stats=Stats(frame_count=0, object_count=0, splat_size_mb=0.0),
+        ).write_atomic(manifest_path)
+
+        artifacts_volume.commit()
+        span.set_attribute("manifest_state", "created")
+        return {"status": "created", "scene_id": scene_id}
+
+
+# ── R2 mirror helpers ──────────────────────────────────────────────────────
+
+
+def _r2_client():
+    """boto3 S3 client pointed at R2. Returns None when creds aren't set."""
+    import os
+
+    account = os.environ.get("R2_ACCOUNT_ID")
+    key = os.environ.get("R2_ACCESS_KEY_ID")
+    secret = os.environ.get("R2_SECRET_ACCESS_KEY")
+    if not (account and key and secret):
+        return None
+    import boto3
+
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
+        region_name="auto",
+    )
+
+
+_ARTIFACT_CONTENT_TYPE = {
+    "manifest.json": "application/json",
+    "annotations.json": "application/json",
+    "cameras.json": "application/json",
+    "splat.ply": "application/octet-stream",
+    "points.ply": "application/octet-stream",
+    "thumbnail.jpg": "image/jpeg",
+}
+
+
+def _mirror_to_r2(scene_id: str, files: list[str]) -> None:
+    """Push the given filenames from the Volume to R2_ARTIFACTS_BUCKET.
+
+    No-op when R2 creds or bucket name are missing — that's how local mode
+    skips R2 entirely.
+    """
+    import os
+    from pathlib import Path
+
+    bucket = os.environ.get("R2_ARTIFACTS_BUCKET")
+    s3 = _r2_client()
+    if not (bucket and s3):
+        return
+    for name in files:
+        src = Path(f"/artifacts/scenes/{scene_id}/{name}")
+        if not src.exists():
+            continue
+        cache = "no-cache" if name == "manifest.json" else "public, max-age=31536000, immutable"
+        try:
+            s3.put_object(
+                Bucket=bucket,
+                Key=f"scenes/{scene_id}/{name}",
+                Body=src.read_bytes(),
+                ContentType=_ARTIFACT_CONTENT_TYPE.get(name, "application/octet-stream"),
+                CacheControl=cache,
+            )
+        except Exception as exc:
+            print(f"r2 mirror {name} failed: {exc!r}", flush=True)
+
+
+def _mirror_manifest(scene_id: str) -> None:
+    _mirror_to_r2(scene_id, ["manifest.json"])
+
+
+def _mirror_artifacts(scene_id: str, names: list[str]) -> None:
+    _mirror_to_r2(scene_id, names)
+
+
+# ── Patch stage helpers to mirror manifest on every transition ─────────────
+# (kept as wrappers so the existing direct callers above also mirror.)
+_orig_stage_running = _stage_running
+_orig_stage_complete = _stage_complete
+_orig_stage_failed = _stage_failed
+_orig_set_top_status = _set_top_status
+
+
+def _stage_running(scene_id: str, stage: str) -> None:  # type: ignore[no-redef]
+    _orig_stage_running(scene_id, stage)
+    _mirror_manifest(scene_id)
+
+
+def _stage_complete(scene_id: str, stage: str) -> None:  # type: ignore[no-redef]
+    _orig_stage_complete(scene_id, stage)
+    _mirror_manifest(scene_id)
+
+
+def _stage_failed(scene_id: str, stage: str, error: str) -> None:  # type: ignore[no-redef]
+    _orig_stage_failed(scene_id, stage, error)
+    _mirror_manifest(scene_id)
+
+
+def _set_top_status(scene_id: str, status: str) -> None:  # type: ignore[no-redef]
+    _orig_set_top_status(scene_id, status)
+    _mirror_manifest(scene_id)
+
+
+# ── process_video: video → frames → manifest → spawn inference ─────────────
+
+
+@app.function(
+    image=image,
+    timeout=900,
+    volumes={"/artifacts": artifacts_volume},
+    secrets=[LOGFIRE_SECRET, R2_SECRET],
+    cpu=4.0,
+    memory=8192,
+)
+@modal.fastapi_endpoint(method="POST", label="process-video")
+def process_video(payload: dict) -> dict:
+    """Pull a video from R2 (or read it from the Volume in local mode),
+    extract frames with ffmpeg, write capture.yaml + initial manifest, then
+    fire-and-forget spawn inference.
+
+    POST body:
+      {
+        "scene_id": "...",
+        "source": {"kind": "r2", "r2_key": "uploads/<id>/<file.mp4>"}
+                | {"kind": "local", "modal_path": "/scenes/<id>/_upload.mp4"},
+        "settings": {
+          "fps": 2.0, "max_frames": 400, "target_long_side": 1920,
+          "segment": true, "keyframes": 5,
+          "backend": "vggt" | "fastvggt"
+        }
+      }
+    """
+    import json
+    import os
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    os.environ.update(COMMON_ENV)
+    import logfire
+    from shared.observability import (  # type: ignore
+        SPAN_MODAL_PROCESS_VIDEO,
+        configure_logfire,
+    )
+    from shared.schemas import (  # type: ignore
+        Artifacts,
+        CaptureYaml,
+        Manifest,
+        Stage,
+        Stages,
+        Stats,
+    )
+
+    configure_logfire("modal-process-video")
+
+    scene_id = payload["scene_id"]
+    source = payload["source"]
+    settings = payload.get("settings") or {}
+
+    with logfire.span(
+        SPAN_MODAL_PROCESS_VIDEO,
         scene_id=scene_id,
-        created_at=datetime.now(timezone.utc),
-        status="queued",
-        stages=Stages(
-            capture=Stage(status="pending"),
-            poses=Stage(status="pending"),
-            splat=Stage(status="pending"),
-            segmentation=Stage(status="pending"),
-        ),
-        artifacts=Artifacts(
-            splat_ply=f"{base}/splat.ply",
-            annotations_json=f"{base}/annotations.json",
-            thumbnail_jpg=f"{base}/thumbnail.jpg",
-            cameras_json=f"{base}/cameras.json",
-        ),
-        stats=Stats(frame_count=0, object_count=0, splat_size_mb=0.0),
-    ).write_atomic(manifest_path)
+        source_kind=source.get("kind"),
+    ) as process_video_span:
+        return _process_video_body(
+            scene_id=scene_id,
+            source=source,
+            settings=settings,
+            span=process_video_span,
+        )
+
+
+def _process_video_body(
+    *, scene_id: str, source: dict, settings: dict, span
+) -> dict:
+    import json
+    import os
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    import logfire
+    from shared.schemas import (  # type: ignore
+        Artifacts,
+        CaptureYaml,
+        Manifest,
+        Stage,
+        Stages,
+        Stats,
+    )
+
+    # Backend choice changes the default frame budget — FastVGGT is the path
+    # you take when you want lots of frames, so we feed ffmpeg 10 fps and
+    # 700 frames by default. Explicit settings still win.
+    backend = settings.get("backend") or os.environ.get("INFERENCE_BACKEND", "vggt")
+    if backend not in ("vggt", "fastvggt"):
+        raise ValueError(f"unknown backend: {backend!r}")
+    if backend == "fastvggt":
+        default_fps = 10.0
+        default_max_frames = 700
+    else:
+        default_fps = 2.0
+        default_max_frames = 400
+
+    fps = float(settings.get("fps", default_fps))
+    max_frames = int(settings.get("max_frames", default_max_frames))
+    target_long_side = int(settings.get("target_long_side", 1920))
+    keyframes = int(settings.get("keyframes", 5))
+    segment = bool(settings.get("segment", True))
+
+    artifacts_volume.reload()
+    scene_dir = Path(f"/artifacts/scenes/{scene_id}")
+    frames_dir = scene_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Seed initial manifest so polling doesn't 404 ────────────────────
+    manifest_path = scene_dir / "manifest.json"
+    if not manifest_path.exists():
+        Manifest(
+            scene_id=scene_id,
+            created_at=datetime.now(timezone.utc),
+            status="processing",
+            stages=Stages(
+                capture=Stage(status="running"),
+                poses=Stage(status="pending"),
+                splat=Stage(status="pending"),
+                segmentation=Stage(status="pending"),
+            ),
+            artifacts=Artifacts(
+                splat_ply=str(scene_dir / "splat.ply"),
+                annotations_json=str(scene_dir / "annotations.json"),
+                thumbnail_jpg=str(scene_dir / "thumbnail.jpg"),
+                cameras_json=str(scene_dir / "cameras.json"),
+            ),
+            stats=Stats(frame_count=0, object_count=0, splat_size_mb=0.0),
+        ).write_atomic(manifest_path)
+    else:
+        _stage_running(scene_id, "capture")
+        _set_top_status(scene_id, "processing")
+    artifacts_volume.commit()
+    _mirror_manifest(scene_id)
+
+    # ── Resolve the source video to a local filesystem path ────────────
+    kind = source.get("kind")
+    if kind == "r2":
+        r2_key = source["r2_key"]
+        bucket = os.environ.get("R2_UPLOADS_BUCKET")
+        s3 = _r2_client()
+        if not (bucket and s3):
+            _stage_failed(scene_id, "capture", "R2 source requested but R2 creds/bucket unset")
+            _set_top_status(scene_id, "failed")
+            artifacts_volume.commit()
+            raise RuntimeError("R2 not configured")
+        video_path = Path(f"/tmp/{scene_id}.mp4")
+        s3.download_file(bucket, r2_key, str(video_path))
+    elif kind == "local":
+        # `modal volume put glasses-twin-artifacts <file> /scenes/<id>/_upload.mp4`
+        # writes under /artifacts/scenes/... via the volume mount.
+        video_path = Path("/artifacts") / source["modal_path"].lstrip("/")
+        if not video_path.exists():
+            _stage_failed(scene_id, "capture", f"local source missing: {video_path}")
+            _set_top_status(scene_id, "failed")
+            artifacts_volume.commit()
+            raise RuntimeError(f"local source missing: {video_path}")
+    else:
+        raise ValueError(f"unknown source.kind: {kind!r}")
+
+    # ── ffprobe duration/resolution ────────────────────────────────────
+    with logfire.span("modal.ffprobe", scene_id=scene_id) as probe_span:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,duration",
+                "-show_entries", "format=duration",
+                "-of", "json", str(video_path),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        pj = json.loads(probe.stdout)
+        stream = (pj.get("streams") or [{}])[0]
+        width = int(stream.get("width", 0))
+        height = int(stream.get("height", 0))
+        duration_s = float(stream.get("duration") or pj.get("format", {}).get("duration") or 0.0)
+        probe_span.set_attribute("video_width", width)
+        probe_span.set_attribute("video_height", height)
+        probe_span.set_attribute("video_duration_s", duration_s)
+
+    span.set_attribute("video_width", width)
+    span.set_attribute("video_height", height)
+    span.set_attribute("video_duration_s", duration_s)
+
+    # ── ffmpeg extract — fps cap + long-side downscale + frame cap ─────
+    # scale='min(LONG, max(iw,ih))':-2 with force_original_aspect_ratio=decrease
+    # is the safest one-liner that handles both portrait and landscape.
+    vf = (
+        f"fps={fps},"
+        f"scale='if(gt(iw,ih),min({target_long_side},iw),-2)':"
+        f"'if(gt(iw,ih),-2,min({target_long_side},ih))'"
+    )
+    # Clear stale frames from a prior run if any
+    for f in frames_dir.glob("*.jpg"):
+        f.unlink()
+    extract_cmd = [
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-vf", vf,
+        "-vframes", str(max_frames),
+        "-q:v", "3",
+        str(frames_dir / "%06d.jpg"),
+    ]
+    with logfire.span(
+        "modal.ffmpeg_extract",
+        scene_id=scene_id,
+        target_fps=fps,
+        target_long_side=target_long_side,
+        max_frames=max_frames,
+    ) as extract_span:
+        try:
+            subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            extract_span.set_attribute("returncode", exc.returncode)
+            extract_span.set_attribute("stderr_tail", (exc.stderr or "")[-2000:])
+            _stage_failed(scene_id, "capture", f"ffmpeg: {exc.stderr[-500:] if exc.stderr else exc!r}")
+            _set_top_status(scene_id, "failed")
+            artifacts_volume.commit()
+            raise
+
+        frame_paths = sorted(frames_dir.glob("*.jpg"))
+        frame_count = len(frame_paths)
+        extract_span.set_attribute("frame_count", frame_count)
+    if frame_count == 0:
+        _stage_failed(scene_id, "capture", "ffmpeg produced 0 frames")
+        _set_top_status(scene_id, "failed")
+        artifacts_volume.commit()
+        raise RuntimeError("0 frames extracted")
+    span.set_attribute("frame_count", frame_count)
+
+    # ── Write capture.yaml ─────────────────────────────────────────────
+    CaptureYaml(
+        scene_id=scene_id,
+        source_video=str(video_path.name),
+        duration_s=duration_s,
+        fps=fps,
+        frame_count=frame_count,
+        resolution=(width or 1920, height or 1080),
+        camera_model="generic",
+        captured_at=datetime.now(timezone.utc),
+    ).to_yaml(scene_dir / "capture.yaml")
+
+    # ── Update manifest: capture complete, frame_count populated ───────
+    m = _read_manifest(scene_id)
+    if m is not None:
+        m.stages.capture.status = "complete"
+        m.status = "processing"
+        m.stats.frame_count = frame_count
+        m.write_atomic(manifest_path)
 
     artifacts_volume.commit()
-    return {"status": "created", "scene_id": scene_id}
+    _mirror_manifest(scene_id)
+
+    # ── Fire inference ─────────────────────────────────────────────────
+    spawned = False
+    try:
+        _inference_async.spawn(scene_id, keyframes, segment, backend)
+        spawned = True
+    except Exception as exc:
+        print(f"inference spawn failed: {exc!r}", flush=True)
+        span.set_attribute("inference_spawn_error", str(exc)[:200])
+        _stage_failed(scene_id, "poses", f"spawn: {exc!r}")
+        _set_top_status(scene_id, "failed")
+        artifacts_volume.commit()
+        _mirror_manifest(scene_id)
+    span.set_attribute("inference_spawned", spawned)
+    span.set_attribute("backend", backend)
+
+    return {
+        "status": "ok",
+        "scene_id": scene_id,
+        "frame_count": frame_count,
+        "backend": backend,
+        "inference_spawned": spawned,
+    }
+
+
+# ── Volume read endpoints (for local mode, which skips the R2 mirror) ──────
+
+
+@app.function(
+    image=image,
+    timeout=60,
+    volumes={"/artifacts": artifacts_volume},
+    cpu=1.0,
+    memory=2048,
+)
+@modal.fastapi_endpoint(method="GET", label="get-manifest")
+def get_manifest(scene_id: str):
+    """Read manifest.json straight off the Volume. Used in local mode."""
+    from pathlib import Path
+    from fastapi import Response
+
+    artifacts_volume.reload()
+    p = Path(_manifest_path(scene_id))
+    if not p.exists():
+        return Response(status_code=404)
+    return Response(
+        content=p.read_bytes(),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-cache",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+_ALLOWED_ARTIFACTS = {
+    "splat.ply",
+    "points.ply",
+    "cameras.json",
+    "annotations.json",
+    "thumbnail.jpg",
+    "manifest.json",
+}
+
+
+@app.function(
+    image=image,
+    timeout=600,
+    volumes={"/artifacts": artifacts_volume},
+    cpu=1.0,
+    memory=2048,
+)
+@modal.fastapi_endpoint(method="GET", label="get-artifact")
+def get_artifact(scene_id: str, file: str):
+    """Stream an artifact file from the Volume. Used in local mode where the
+    R2 mirror is intentionally disabled.
+
+    Uses FileResponse rather than Response(content=read_bytes()) so the file
+    streams from disk to wire as bytes are read. For large artifacts (notably
+    the per-pixel `points.ply` at ~230 MB) this drops time-to-first-byte by
+    1-2 s and avoids holding the full payload in container memory.
+    """
+    from pathlib import Path
+    from fastapi import Response
+    from fastapi.responses import FileResponse
+
+    if file not in _ALLOWED_ARTIFACTS:
+        return Response(status_code=400, content=f"file not allowed: {file}")
+    artifacts_volume.reload()
+    p = Path(f"/artifacts/scenes/{scene_id}/{file}")
+    if not p.exists():
+        return Response(status_code=404)
+    media = _ARTIFACT_CONTENT_TYPE.get(file, "application/octet-stream")
+    cache = "no-cache" if file == "manifest.json" else "public, max-age=300"
+    return FileResponse(
+        path=str(p),
+        media_type=media,
+        headers={
+            "Cache-Control": cache,
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.local_entrypoint()
@@ -455,5 +1058,5 @@ def smoke(scene_id: str = "modal_smoke") -> None:
     print("prepare:", prepare_scene.remote({"scene_id": scene_id}))
     # NOTE: this assumes you've already uploaded frames into the volume:
     #   modal volume put glasses-twin-artifacts ./local_scene scenes/<scene_id>
-    print("inference:", run_inference.remote({"scene_id": scene_id, "iterations": 3000}))
+    print("inference:", run_inference.remote({"scene_id": scene_id}))
     print("segmentation:", run_segmentation.remote({"scene_id": scene_id, "keyframes": 5}))

@@ -1,22 +1,33 @@
 "use client";
 
 import type { Manifest, Stage, StageStatus } from "@/lib/types";
+import { useUI } from "@/store/ui";
 
+// Visible stages in the panel. The internal "splat" stage (voxel-downsample
+// of VGGT surfels into the small splat.ply that segmentation clusters over)
+// is hidden — the viewer doesn't render that output and it's confusing to
+// surface to a user. Pipeline manifest still tracks it; we just don't show it.
 const STAGE_ORDER: (keyof Manifest["stages"])[] = [
   "capture",
   "poses",
-  "splat",
   "segmentation",
 ];
 
 const LABEL: Record<keyof Manifest["stages"], string> = {
   capture: "Capture",
-  poses: "Poses (VGGT)",
-  splat: "Splat (3DGRUT)",
+  poses: "Reconstruction (VGGT)",
+  splat: "Splat (cluster)",
   segmentation: "Segmentation",
 };
 
+function formatPointCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)} K`;
+  return n.toLocaleString();
+}
+
 export function PipelineProgress({ manifest }: { manifest: Manifest }) {
+  const cloudStats = useUI((s) => s.cloudStats);
   return (
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
@@ -44,7 +55,7 @@ export function PipelineProgress({ manifest }: { manifest: Manifest }) {
           </li>
         ))}
       </ol>
-      <Stats manifest={manifest} />
+      <Stats manifest={manifest} cloudStats={cloudStats} />
     </div>
   );
 }
@@ -66,8 +77,11 @@ function DurationOrExtra({ stage }: { stage: Stage }) {
   if (typeof stage.duration_s === "number") {
     parts.push(`${stage.duration_s.toFixed(1)}s`);
   }
-  if (typeof stage["iterations"] === "number") {
-    parts.push(`${stage["iterations"]} iter`);
+  // The `gaussian_count` field is the count of cluster-source primitives in
+  // splat.ply (input to segmentation), NOT the count rendered in the viewer.
+  // Rendered points come from points.ply and live in the cloudStats store.
+  if (typeof stage["gaussian_count"] === "number") {
+    parts.push(`${formatPointCount(stage["gaussian_count"] as number)} clusters`);
   }
   if (typeof stage["object_count"] === "number") {
     parts.push(`${stage["object_count"]} obj`);
@@ -79,16 +93,48 @@ function DurationOrExtra({ stage }: { stage: Stage }) {
   );
 }
 
-function Stats({ manifest }: { manifest: Manifest }) {
+function Stats({
+  manifest,
+  cloudStats,
+}: {
+  manifest: Manifest;
+  cloudStats: { count: number; sizeMb: number } | null;
+}) {
+  // Frame cell: VGGT consumes a frame-budgeted subset of what capture extracts.
+  // Show "used / captured" once VGGT has stamped its consumed count on the
+  // poses stage; before that, fall back to the on-disk capture count.
+  const captured = manifest.stats.frame_count;
+  const usedRaw = manifest.stages.poses["frame_count"];
+  const used = typeof usedRaw === "number" ? usedRaw : null;
+  const frameValue =
+    used !== null && used !== captured
+      ? `${used} / ${captured}`
+      : `${captured}`;
+
+  // Splat cell: prefer the viewer's live cloud count; fall back to the splat
+  // stage's gaussian_count (set as soon as splat completes); only fall back
+  // to size-on-disk when neither is available yet.
+  const splatGaussiansRaw = manifest.stages.splat["gaussian_count"];
+  const splatGaussians =
+    typeof splatGaussiansRaw === "number" ? splatGaussiansRaw : null;
+  let cloudLabel: string;
+  let cloudValue: string;
+  if (cloudStats) {
+    cloudLabel = "points";
+    cloudValue = `${formatPointCount(cloudStats.count)}`;
+  } else if (splatGaussians !== null) {
+    cloudLabel = "points";
+    cloudValue = `${formatPointCount(splatGaussians)}`;
+  } else {
+    cloudLabel = "splat";
+    cloudValue = `${manifest.stats.splat_size_mb.toFixed(0)} MB`;
+  }
+
   return (
     <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-ink-800 bg-ink-900/40 text-center">
-      <Cell label="frames" value={manifest.stats.frame_count} />
+      <Cell label="frames" value={frameValue} />
       <Cell label="objects" value={manifest.stats.object_count} divider />
-      <Cell
-        label="splat"
-        value={`${manifest.stats.splat_size_mb.toFixed(0)} MB`}
-        divider
-      />
+      <Cell label={cloudLabel} value={cloudValue} divider />
     </div>
   );
 }

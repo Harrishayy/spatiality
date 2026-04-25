@@ -39,6 +39,8 @@ class Cluster:
     anchor_frame: str | None
     anchor_mask_bbox: tuple[int, int, int, int] | None  # (x, y, w, h) in image
     anchor_area: int
+    sources: tuple[str, ...] = ()  # subset of {"sam", "vlm"}, sorted
+    proposed_phrase: str = ""  # best VLM phrase for the group; empty if SAM-only
 
 
 def _project(point_xyz: np.ndarray, extrinsic: np.ndarray, intrinsic: np.ndarray) -> tuple[int, int, float] | None:

@@ -7,7 +7,7 @@ export type ManifestStatus = "queued" | "processing" | "ready" | "failed";
 export interface Stage {
   status: StageStatus;
   duration_s?: number | null;
-  // Stage-specific extras (poses.method, splat.iterations, segmentation.object_count, ...)
+  // Stage-specific extras (poses.method, splat.gaussian_count, segmentation.object_count, ...)
   [extra: string]: unknown;
 }
 

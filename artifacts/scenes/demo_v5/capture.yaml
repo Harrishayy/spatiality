@@ -1,0 +1,11 @@
+scene_id: demo_v5
+source_video: samples/capture.mp4
+duration_s: 63.157
+fps: 15.0
+frame_count: 947
+resolution:
+- 1552
+- 2064
+camera_model: generic
+fov_deg: null
+captured_at: '2026-04-25T20:49:01.205955Z'

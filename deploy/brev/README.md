@@ -1,5 +1,11 @@
 # Brev — manual fallback for inference + segmentation
 
+> **STALE** — written for the old VGGT + 3DGRUT path. The current pipeline
+> uses VGGT + per-pixel surfel synthesis (no training); the steps below
+> reference 3DGRUT compile and `--iterations` flags that no longer exist.
+> Re-derive from `inference/modal_app.py` if you actually need to run on
+> Brev. Kept for historical reference only.
+
 Used when Modal credits are exhausted or Modal misbehaves on demo day.
 No web API; SSH in, run a script, scp results back.
 
@@ -7,7 +13,6 @@ No web API; SSH in, run a script, scp results back.
 
 - Modal cold-start consistently 60s+ during pre-demo bake.
 - Modal A100 quota exhausted.
-- 3DGRUT compile fails on Modal's image (rare, but Brev's NVIDIA image is closer to bare metal).
 
 ## Provision
 

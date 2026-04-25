@@ -1,22 +1,23 @@
 """SAM 3.1 grounded mask generation on keyframes.
 
 Spec: plans/modules/03_segmentation.md.
-- Pick 4-6 keyframes evenly distributed by camera arc length (cameras.json).
-- Run SAM 3.1 with a generic text prompt ("object") per keyframe; collect masks.
+- Pick keyframes evenly distributed by camera arc length (cameras.json).
+- Run SAM 3.1 with a small list of generic text prompts per keyframe; collect
+  all masks above the confidence threshold; per-frame IoU-dedup.
 
-SAM 3.1 is text-grounded (no AutomaticMaskGenerator like SAM 2). To enumerate
-objects unsupervised, we prompt with a generic catch-all phrase and let SAM 3.1
-return all matching boxes + masks above the confidence threshold. The prompt
-is overridable via SAM3_TEXT_PROMPT for scenes that need a tighter target.
+SAM 3.1 is text-grounded — to enumerate a scene unsupervised we issue several
+complementary prompts (object / furniture / electronic device / small item /
+container) and union the results. Single-prompt mode is preserved behind the
+legacy SAM3_TEXT_PROMPT env var for backward compat.
 
-Weights load from HF Hub on first call (gated repo, requires HF_TOKEN env var) —
-SAM 3.1's `build_sam3_image_model(load_from_HF=True)` handles the download
-itself, so no manual snapshot pre-fetch is needed.
+Weights load from HF Hub on first call (gated repo, requires HF_TOKEN env var).
 
 Env vars:
   SAM3_CHECKPOINT      — path to a local sam3 .pt; default: HF auto-fetch
-  SAM3_TEXT_PROMPT     — text prompt for enumeration (default: "object")
-  SAM3_CONFIDENCE      — confidence threshold (default: 0.5)
+  SAM3_TEXT_PROMPTS    — comma-separated prompts (default: 5-prompt list)
+  SAM3_TEXT_PROMPT     — legacy single prompt; if set overrides SAM3_TEXT_PROMPTS
+  SAM3_CONFIDENCE      — confidence threshold (default: 0.35)
+  SAM3_DEDUP_IOU       — intra-frame dedup IoU threshold (default: 0.85)
   HF_TOKEN             — gated repo auth (required for first download only)
 """
 
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,19 @@ import numpy as np
 from PIL import Image
 
 SAM3_CHECKPOINT = os.environ.get("SAM3_CHECKPOINT")
-SAM3_TEXT_PROMPT = os.environ.get("SAM3_TEXT_PROMPT", "object")
-SAM3_CONFIDENCE = float(os.environ.get("SAM3_CONFIDENCE", "0.5"))
+SAM3_CONFIDENCE = float(os.environ.get("SAM3_CONFIDENCE", "0.35"))
+SAM3_DEDUP_IOU = float(os.environ.get("SAM3_DEDUP_IOU", "0.85"))
+
+_DEFAULT_PROMPTS = "object,furniture,electronic device,small item on a surface,container"
+
+
+def _resolve_prompts() -> list[str]:
+    """Single legacy prompt wins if explicitly set; otherwise the multi-prompt list."""
+    legacy = os.environ.get("SAM3_TEXT_PROMPT")
+    if legacy:
+        return [legacy]
+    raw = os.environ.get("SAM3_TEXT_PROMPTS", _DEFAULT_PROMPTS)
+    return [p.strip() for p in raw.split(",") if p.strip()]
 
 
 @dataclass
@@ -45,6 +57,10 @@ class Mask:
     bbox: tuple[int, int, int, int]  # (x, y, w, h)
     area: int
     confidence: float
+    source: str = "sam"  # "sam" or "vlm"
+    prompt: str = ""  # SAM prompt that produced this mask, if source="sam"
+    phrase: str = ""  # VLM phrase, if source="vlm"
+    proposal_confidence: float = 0.0  # VLM proposer confidence, if source="vlm"
 
 
 def pick_keyframes(cameras: list[dict], n: int = 5) -> list[int]:
@@ -103,7 +119,7 @@ def build_generator() -> Any:
 
 
 def _state_to_masks(
-    state: dict, frame_idx: int, frame_name: str
+    state: dict, frame_idx: int, frame_name: str, prompt: str, mask_id_offset: int = 0
 ) -> list[Mask]:
     """Convert a Sam3Processor state dict (after grounding) to our Mask records."""
     if "masks" not in state or "boxes" not in state or "scores" not in state:
@@ -124,18 +140,60 @@ def _state_to_masks(
             Mask(
                 frame_idx=frame_idx,
                 frame_name=frame_name,
-                mask_id=j,
+                mask_id=mask_id_offset + j,
                 segmentation=seg,
                 bbox=(x, y, w, h),
                 area=int(seg.sum()),
                 confidence=float(scores_t[j].item()),
+                source="sam",
+                prompt=prompt,
             )
         )
     return out
 
 
+def _dedup_per_frame(masks: list[Mask], iou_threshold: float) -> tuple[list[Mask], int]:
+    """Drop near-duplicate masks within one frame; keep higher-confidence one.
+
+    Two masks are duplicates when their pixel IoU >= iou_threshold. O(N²) on
+    the (typically <50) masks per frame; dwarfed by SAM inference cost.
+    """
+    if len(masks) < 2:
+        return masks, 0
+    order = sorted(range(len(masks)), key=lambda i: masks[i].confidence, reverse=True)
+    keep = [True] * len(masks)
+    dropped = 0
+    for ai, a in enumerate(order):
+        if not keep[a]:
+            continue
+        seg_a = masks[a].segmentation
+        area_a = masks[a].area
+        for b in order[ai + 1 :]:
+            if not keep[b]:
+                continue
+            seg_b = masks[b].segmentation
+            if seg_a.shape != seg_b.shape:
+                continue
+            inter = int(np.logical_and(seg_a, seg_b).sum())
+            if inter == 0:
+                continue
+            union = area_a + masks[b].area - inter
+            if union <= 0:
+                continue
+            iou = inter / union
+            if iou >= iou_threshold:
+                keep[b] = False
+                dropped += 1
+    return [m for m, k in zip(masks, keep) if k], dropped
+
+
 def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
-    """Generate masks for each keyframe; return flat mask list + backend name ('sam3')."""
+    """Generate masks for each keyframe; return flat mask list + backend name ('sam3').
+
+    Iterates the SAM3_TEXT_PROMPTS list per keyframe so a text-grounded model
+    enumerates more than one category. Per-frame IoU dedup keeps near-duplicates
+    out of the lift step.
+    """
     import logfire
     import torch
 
@@ -143,11 +201,8 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
     frame_dir = scene_dir / "frames"
     processor = build_generator()
     backend = "sam3"
+    prompts = _resolve_prompts()
 
-    # SAM 3.1 weights load in bfloat16 on CUDA — image inputs come in fp32 from
-    # PIL, which trips `mat1/mat2 dtype mismatch` deep in the ViT. The official
-    # examples wrap inference in autocast(bfloat16) + inference_mode. We mirror
-    # that here. On CPU we fall back to fp32 (autocast is a no-op).
     device = _device()
     use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
     autocast_ctx = (
@@ -157,6 +212,9 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
     )
 
     masks: list[Mask] = []
+    mask_count_per_prompt: dict[str, int] = {p: 0 for p in prompts}
+    total_dedup_dropped = 0
+
     with autocast_ctx, torch.inference_mode():
         for idx in keyframes:
             cam = cameras[idx]
@@ -168,16 +226,41 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
                 frame_path = sorted_frames[idx]
 
             img = Image.open(frame_path).convert("RGB")
+            frame_masks: list[Mask] = []
             with logfire.span(
                 "segmentation.sam3.keyframe",
                 keyframe_idx=idx,
                 frame_name=frame_path.name,
                 backend=backend,
-                text_prompt=SAM3_TEXT_PROMPT,
+                prompt_count=len(prompts),
             ) as span:
                 state = processor.set_image(img)
-                state = processor.set_text_prompt(SAM3_TEXT_PROMPT, state)
-                frame_masks = _state_to_masks(state, idx, frame_path.name)
-                span.set_attribute("mask_count", len(frame_masks))
-            masks.extend(frame_masks)
+                mask_id_offset = 0
+                for prompt in prompts:
+                    state = processor.set_text_prompt(prompt, state)
+                    prompt_masks = _state_to_masks(
+                        state, idx, frame_path.name, prompt, mask_id_offset
+                    )
+                    mask_count_per_prompt[prompt] += len(prompt_masks)
+                    mask_id_offset += len(prompt_masks)
+                    frame_masks.extend(prompt_masks)
+                # Within-frame near-duplicate suppression across prompts.
+                deduped, dropped = _dedup_per_frame(frame_masks, SAM3_DEDUP_IOU)
+                total_dedup_dropped += dropped
+                span.set_attribute("mask_count_raw", len(frame_masks))
+                span.set_attribute("mask_count", len(deduped))
+                span.set_attribute("dedup_dropped", dropped)
+            masks.extend(deduped)
+
+    with logfire.span(
+        "segmentation.sam3.summary",
+        backend=backend,
+        prompt_list=",".join(prompts),
+        keyframe_count=len(keyframes),
+        total_masks=len(masks),
+        dedup_dropped=total_dedup_dropped,
+    ) as span:
+        for p, c in mask_count_per_prompt.items():
+            span.set_attribute(f"mask_count[{p}]", c)
+
     return masks, backend

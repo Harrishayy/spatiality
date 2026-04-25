@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--scene-dir", default=None, help="Override resolved scene dir")
     parser.add_argument("--video", default="samples/capture.mp4")
-    parser.add_argument("--fps", type=float, default=2.0)
+    parser.add_argument("--fps", type=float, default=4.0)
     parser.add_argument("--max-frames", type=int, default=400)
     parser.add_argument(
         "--camera-model",

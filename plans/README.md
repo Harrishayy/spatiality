@@ -6,7 +6,7 @@ Read in this order:
 
 1. [`ORCHESTRATOR.md`](./ORCHESTRATOR.md) — north star, module map, critical path, time budget, demo script
 2. [`modules/01_capture.md`](./modules/01_capture.md) — Ray-Ban mp4 → frames
-3. [`modules/02_inference.md`](./modules/02_inference.md) — frames → Gaussian splat (VGGT + 3DGRUT)
+3. [`modules/02_inference.md`](./modules/02_inference.md) — frames → Gaussian splat (VGGT depth + surfel synthesis)
 4. [`modules/03_segmentation.md`](./modules/03_segmentation.md) — splat + frames → annotations (SAM 3.1 + VLM)
 5. [`modules/04_object_isolation.md`](./modules/04_object_isolation.md) — per-object cluster isolation (stretch)
 6. [`modules/05_storage.md`](./modules/05_storage.md) — artifact layer, manifest schema
@@ -26,6 +26,5 @@ All modules read/write under `artifacts/scenes/<scene_id>/`. The schema is in [`
 
 ## Verified facts (April 2026)
 - **SAM 3.1** (Meta, March 27 2026) — drop-in replacement for SAM 3, multi-object tracking, ~32 fps on H100.
-- **VGGT** (CVPR 2025) — fastest SOTA for camera poses + dense point cloud, ~0.2s feed-forward.
-- **3DGRUT** (NVIDIA) — handles non-pinhole cameras (Ray-Ban wide-angle).
+- **VGGT-1B** (CVPR 2025, Meta) — feed-forward depth + camera + per-pixel confidence in one pass, ~2–4s on A100-80GB at 48 frames. We feed its `depth_head` + `camera_head` outputs into a NumPy surfel synthesiser; no per-scene optimisation needed.
 - **Pydantic AI Gateway** — single SDK for OpenAI + Anthropic + Google + Bedrock + Groq, with Logfire tracing and spend caps.

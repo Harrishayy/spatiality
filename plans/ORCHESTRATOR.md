@@ -8,9 +8,9 @@ Two demo pillars:
 2. **In-twin VLM Q&A** — ask "where am I?" while navigating the splat; agent answers from your current viewpoint + position.
 
 ## Decisions (locked in)
-- **Splat method:** 3DGRUT (NVIDIA, ray-tracing-based) — handles **any camera model** (pinhole phone video, Ray-Ban wide-angle, GoPro fisheye) via configurable projection. **Locked.**
-- **Input source:** any mp4. Pipeline is camera-agnostic; `capture.yaml` records the camera type and inference picks the right 3DGRUT config. Demo uses Ray-Ban for narrative reasons, but a phone video uploaded by a judge would also work.
-- **Pose + initial point cloud:** VGGT (~0.2s feed-forward) — replaces COLMAP for speed.
+- **Splat method:** VGGT-direct surfel synthesis — VGGT's depth + camera heads give us per-pixel world points; we wrap each pixel as an oriented anisotropic Gaussian, voxel-downsample, and ship the standard INRIA-layout PLY. No per-scene optimisation. **Locked.**
+- **Input source:** any mp4. Pipeline is camera-agnostic; VGGT estimates intrinsics and extrinsics from the frames directly.
+- **Pose + depth + per-pixel confidence:** VGGT-1B (~2–4s feed-forward on A100-80GB at 48 frames). Replaces COLMAP and gsplat training in one shot.
 - **Segmentation:** two-pass — SAM 3.1 produces masks, then a VLM (Claude Haiku via Pydantic AI Gateway) names each region with fine-grained labels.
 - **GPU:** Kaggle (RTX Pro 6000, offline-bundled) for early test runs → Modal or Brev for the production demo run.
 - **Hosting:** Render hosts `/web` (static site) + `/agent` (web service). Inference is external.
@@ -33,10 +33,10 @@ Two demo pillars:
 
 ## Critical path (the chain that gates the demo)
 ```
-upload → frames → VGGT poses + point cloud → 3DGRUT splat → splat in viewer
+upload → frames → VGGT depth+camera → per-pixel surfel synth → voxel downsample → splat in viewer
 ```
 
-Total budget: **5 minutes**. Anything that branches off this chain (segmentation, fine-grained labels, agent chat, per-object isolation) enriches the demo but does not gate the moment the splat appears on the phone.
+Total budget: **5 minutes** (inference itself is 5–15s on A100; the rest is upload + ffmpeg + segmentation). Anything that branches off this chain (segmentation, fine-grained labels, agent chat, per-object isolation) enriches the demo but does not gate the moment the splat appears on the phone.
 
 ## Parallelization (3 workers)
 
@@ -73,7 +73,7 @@ This means the web layer can be deployed and demo-ready by hour 8 even if the re
 
 | Failure | Mitigation |
 |---------|------------|
-| 3DGRUT won't compile in time | Vanilla 3DGS via Splatfacto on Modal — pipeline still works, loses Ray-Ban-specific quality |
+| VGGT depth degenerate on a scene | Lower `VGGT_DEPTH_CONF_MIN` and `VGGT_DEPTH_GRAD_MAX`; if still bad, swap to a longer/better-lit input clip |
 | SAM 3.1 wrong env / too slow | SAM 2 + Grounding DINO + VLM — fewer concepts but proven |
 | VGGT poses bad on Ray-Ban footage | COLMAP via `ns-process-data` — adds 1–2 min to pipeline |
 | Modal/Brev credits exhausted | Kaggle for the demo run — slower but free |
@@ -99,9 +99,9 @@ We do **not** run inference live on stage. Inference takes 5–10 minutes and is
 | 0:15–0:45 | **Upload + verbal handoff:** Open URL on phone, upload the clip. "Inference takes 5–10 minutes — pose estimation, splat training, segmentation. You'll see receipts in a moment." Show upload completing, then transition. |
 | 0:45–1:15 | **The finished twin (pre-baked, the end of the process):** Open the pre-built scene URL. Drag, orbit. **Hero moment:** tap "where am I?" → VLM responds. Move camera. Ask again. Different answer. |
 | 1:15–2:00 | **Two more interactions:** spatial chat query ("what's the laptop model?"), then a flyby ("show me the mug"). Optional: tap-to-isolate one object. |
-| 2:00–2:45 | **Evidence (the Logfire moment):** Flip to the Logfire trace view filtered to the demo scene. "Here's what actually ran. Capture 8 seconds. VGGT poses 1.2 seconds. 3DGRUT splat 6 minutes 20. SAM 3.1 segmentation 52 seconds. VLM labeling 26 seconds. Every spatial query you just saw cost about $0.001, traced and spend-capped." Point to the waterfall. |
+| 2:00–2:45 | **Evidence (the Logfire moment):** Flip to the Logfire trace view filtered to the demo scene. "Here's what actually ran. Capture 8 seconds. VGGT depth + cameras 3.4 seconds. Surfel synthesis + voxel downsample 1.2 seconds. SAM 3.1 segmentation 52 seconds. VLM labeling 26 seconds. Every spatial query you just saw cost about $0.001, traced and spend-capped." Point to the waterfall. |
 | 2:45–3:30 | **Why this matters (Mubit hook):** tailor to Mubit's domain. The substance is: same pipeline runs on any video, any camera; no specialized hardware; mobile-viewable; observable; cost-bounded. |
-| 3:30–4:00 | **Where this goes:** "Today's run was ~7 minutes. With warm Modal containers and tighter 3DGRUT iteration count, we have a path to under 90 seconds. The architecture's ready — what you saw is the v0." |
+| 3:30–4:00 | **Where this goes:** "Inference itself is already under 15 seconds; the rest is upload + capture + segmentation. With warm Modal containers and on-device capture, we have a path to under 30 seconds end-to-end. The architecture's ready — what you saw is the v0." |
 
 ## Pre-demo bake (T-30 minutes)
 - Run the full pipeline on the chosen demo scene end-to-end.

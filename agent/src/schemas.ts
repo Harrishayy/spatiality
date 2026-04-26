@@ -11,6 +11,16 @@ export const VlmModelId = z.enum([
 ]);
 export type VlmModelId = z.infer<typeof VlmModelId>;
 
+// Scene IDs flow into R2 keys (`scenes/<id>/...`), Modal querystrings, and
+// Logfire SQL. Lock the charset to ULID/path-safe characters so a malicious
+// caller can't path-traverse or break out of a quoted SQL literal.
+export const SceneIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, "scene_id must be [A-Za-z0-9_-]{1,64}");
+export const SCENE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 export const Settings = z.object({
   fps: z.number().min(0.5).max(10).default(2.0),
   max_frames: z.number().int().min(10).max(800).default(400),
@@ -31,13 +41,13 @@ export type InitUploadBody = z.infer<typeof InitUploadBody>;
 export const SubmitJobBody = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("r2"),
-    scene_id: z.string().min(1),
+    scene_id: SceneIdSchema,
     r2_key: z.string().min(1),
     settings: Settings,
   }),
   z.object({
     mode: z.literal("local"),
-    scene_id: z.string().min(1),
+    scene_id: SceneIdSchema,
     modal_path: z.string().min(1),
     settings: Settings,
   }),

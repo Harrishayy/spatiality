@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { fetchManifestFromModal, fireProcessVideo } from "../lib/modal.js";
 import { getArtifactJson, R2_ARTIFACTS_BUCKET } from "../lib/r2.js";
-import { SubmitJobBody } from "../schemas.js";
+import { SCENE_ID_RE, SubmitJobBody } from "../schemas.js";
 
 interface CacheEntry {
   at: number;
@@ -40,6 +40,9 @@ export const jobsRoute: FastifyPluginAsync = async (app) => {
     "/api/jobs/:scene_id",
     async (request, reply) => {
       const sceneId = request.params.scene_id;
+      if (!SCENE_ID_RE.test(sceneId)) {
+        return reply.code(400).send({ error: "invalid scene_id" });
+      }
       const mode = request.query.mode === "local" ? "local" : "r2";
       const cacheKey = `${mode}:${sceneId}`;
       const hit = manifestCache.get(cacheKey);

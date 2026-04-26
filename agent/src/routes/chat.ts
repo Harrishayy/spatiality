@@ -20,11 +20,12 @@ import {
   loadAnnotations,
   resolveAnnotation,
 } from "../lib/frames.js";
+import { SceneIdSchema } from "../schemas.js";
 
 const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
 
 const ChatBody = z.object({
-  scene_id: z.string().min(1).max(64),
+  scene_id: SceneIdSchema,
   message: z.string().min(1).max(2000),
   camera_pos: Vec3.optional(),
 });

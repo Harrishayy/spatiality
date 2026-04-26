@@ -9,6 +9,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { anthropicClient } from "../lib/gateway.js";
+import { SceneIdSchema } from "../schemas.js";
 
 const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
 
@@ -19,7 +20,7 @@ const NearbyObject = z.object({
 });
 
 const LocateBody = z.object({
-  scene_id: z.string().min(1).max(64),
+  scene_id: SceneIdSchema,
   image_b64: z.string().optional(),
   camera_pos: Vec3,
   camera_dir: Vec3,

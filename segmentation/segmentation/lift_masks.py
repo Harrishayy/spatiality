@@ -317,11 +317,17 @@ def _cache_save(scene_dir: Path, key: dict, clusters: list[Cluster]) -> None:
 # ─── mask persistence ─────────────────────────────────────────────────────
 
 
+# Mask area floor for the per-cluster on-disk PNGs. Frames whose mask falls
+# below this are dropped at write-time AND filtered out of the cluster's
+# frame_ids list, so the web evidence gallery never asks for a 404.
+_EVIDENCE_MIN_AREA_PX = 64
+
+
 def _write_cluster_masks(
     scene_dir: Path,
     mask_groups: list[tuple[str, list[Mask]]],
     *,
-    min_area_px: int = 64,
+    min_area_px: int = _EVIDENCE_MIN_AREA_PX,
 ) -> None:
     """Persist per-cluster SAM masks under masks/<cluster_id>/<frame_stem>.png.
 
@@ -673,10 +679,16 @@ def cluster_via_masks(
             anchor = filtered_masks[anchor_local]
 
             sources_set = sorted({filtered_masks[i].source for i in g})
-            # Frames where this object was observed. Capped at 6 — the chat
+            # Frames where this object was observed. Mirror the writer's
+            # area filter so we never advertise a frame whose mask wasn't
+            # persisted (the gallery would 404). Capped at 6 — the chat
             # agent only inlines a few per request and Anthropic image budget
             # is finite. Sorted for deterministic output.
-            frame_ids_seen = sorted({filtered_masks[i].frame_name for i in g})[:6]
+            frame_ids_seen = sorted({
+                filtered_masks[i].frame_name
+                for i in g
+                if filtered_masks[i].area >= _EVIDENCE_MIN_AREA_PX
+            })[:6]
             # Best VLM phrase in the group: highest proposal_confidence.
             vlm_members = [filtered_masks[i] for i in g if filtered_masks[i].source == "vlm"]
             proposed_phrase = ""

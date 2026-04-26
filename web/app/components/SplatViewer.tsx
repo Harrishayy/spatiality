@@ -728,9 +728,13 @@ interface Props {
   annotations: Annotation[];
   /** Set true when the splat file is empty/0-vertex; we'll show a placeholder. */
   emptySplat?: boolean;
+  /** Optional pre-baked wireframe.ply URL. When undefined the viewer skips the
+   *  artifact fetch entirely and uses the client-side voxel sampler. Gated by
+   *  the manifest so we don't 404 on scenes that never produced one. */
+  wireframeUrl?: string;
 }
 
-export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
+export function SplatViewer({ splatUrl, annotations, emptySplat, wireframeUrl }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<{
@@ -969,9 +973,11 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       // sampler if it's missing or fails to parse. We mark `built`
       // synchronously to avoid re-entry on rapid toggles.
       wireframeBuiltRef.current = true;
-      const wfUrl = splatUrl.replace(/points\.ply/g, "wireframe.ply");
-      const tryArtifact = wfUrl !== splatUrl
-        ? fetch(wfUrl)
+      // Only hit the network when the manifest advertises wireframe.ply —
+      // otherwise the 404 noise drowns the console and the voxel sampler is
+      // already a fine fallback.
+      const tryArtifact = wireframeUrl
+        ? fetch(wireframeUrl)
             .then((r) => (r.ok ? r.arrayBuffer() : null))
             .then((b) => (b ? parseWireframePLY(b) : null))
             .catch(() => null)
@@ -1066,7 +1072,7 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
     };
 
     markDirtyRef.current?.();
-  }, [wireframeMode, annotations, splatUrl]);
+  }, [wireframeMode, annotations, wireframeUrl]);
 
   // Tear down wireframe DOM on unmount.
   useEffect(() => {

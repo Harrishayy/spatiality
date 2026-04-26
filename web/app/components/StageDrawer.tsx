@@ -39,6 +39,13 @@ function logfireSceneUrl(sceneId: string): string | null {
   return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(sql)}`;
 }
 
+// Format an ISO-8601 timestamp for display. Snapshotted spans from R2 can be
+// missing/null in the wild — guard rather than crash the drawer.
+function prettyTimestamp(ts: string | null | undefined): string {
+  if (!ts) return "—";
+  return ts.replace("T", " ").replace("Z", "");
+}
+
 function logfireSpanUrl(traceId: string | undefined): string | null {
   // Older agent builds don't return trace_id; without it the per-span deep
   // link is unconstructable. Skip rather than crash on undefined.replace().
@@ -226,7 +233,7 @@ function SpanDetail({ node, sceneId }: { node: TraceTreeNode; sceneId: string })
           <p className="mt-1 font-mono text-[10px] text-ink-500">
             {durSec != null ? `${durSec.toFixed(3)}s` : "—"}
             {" · "}
-            {node.start_timestamp.replace("T", " ").replace("Z", "")}
+            {prettyTimestamp(node.start_timestamp)}
           </p>
         </div>
         {lfUrl && (

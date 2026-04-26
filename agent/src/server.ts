@@ -2,8 +2,11 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 
-import { uploadsRoute } from "./routes/uploads.js";
+import { gatewayRoute } from "./routes/gateway.js";
 import { jobsRoute } from "./routes/jobs.js";
+import { locateRoute } from "./routes/locate.js";
+import { traceRoute } from "./routes/trace.js";
+import { uploadsRoute } from "./routes/uploads.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -34,6 +37,9 @@ app.get("/health", async () => ({ ok: true }));
 
 await app.register(uploadsRoute);
 await app.register(jobsRoute);
+await app.register(traceRoute);
+await app.register(gatewayRoute);
+await app.register(locateRoute);
 
 app
   .listen({ port: PORT, host: HOST })

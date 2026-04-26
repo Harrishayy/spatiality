@@ -187,21 +187,90 @@ def _dedup_per_frame(masks: list[Mask], iou_threshold: float) -> tuple[list[Mask
     return [m for m, k in zip(masks, keep) if k], dropped
 
 
-def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
+def _state_to_box_masks(
+    state: dict,
+    frame_idx: int,
+    frame_name: str,
+    phrase: str,
+    proposal_confidence: float,
+    mask_id_offset: int,
+) -> list[Mask]:
+    """Same as _state_to_masks but tags each mask with VLM provenance.
+
+    Used for box-prompted segmentation where the VLM proposed the bbox + phrase.
+    A SAM 3.1 mask returned here is the tight pixel boundary of whatever object
+    is inside that bbox — phrase rides along so cluster_via_masks can credit
+    the VLM source. Source = "vlm" so downstream cluster anchor / labeling
+    logic prefers these (still real boundaries, with semantic identity).
+    """
+    if "masks" not in state or "boxes" not in state or "scores" not in state:
+        return []
+    masks_t = state["masks"].cpu()
+    boxes_t = state["boxes"].cpu()
+    scores_t = state["scores"].cpu()
+    out: list[Mask] = []
+    for j in range(masks_t.shape[0]):
+        seg = masks_t[j, 0].numpy().astype(bool)
+        x0, y0, x1, y1 = (float(v) for v in boxes_t[j].tolist())
+        x, y = int(round(x0)), int(round(y0))
+        w, h = int(round(x1 - x0)), int(round(y1 - y0))
+        if w <= 0 or h <= 0:
+            continue
+        out.append(
+            Mask(
+                frame_idx=frame_idx,
+                frame_name=frame_name,
+                mask_id=mask_id_offset + j,
+                segmentation=seg,
+                bbox=(x, y, w, h),
+                area=int(seg.sum()),
+                confidence=float(scores_t[j].item()),
+                source="vlm",
+                prompt="",
+                phrase=phrase,
+                proposal_confidence=float(proposal_confidence),
+            )
+        )
+    return out
+
+
+def run(
+    scene_dir: Path,
+    keyframes: list[int],
+    proposals_by_frame: dict[str, list[tuple[str, tuple[float, float, float, float], float]]] | None = None,
+    scene_id: str | None = None,
+) -> tuple[list[Mask], str]:
     """Generate masks for each keyframe; return flat mask list + backend name ('sam3').
 
-    Iterates the SAM3_TEXT_PROMPTS list per keyframe so a text-grounded model
-    enumerates more than one category. Per-frame IoU dedup keeps near-duplicates
-    out of the lift step.
+    Single pass per keyframe: for each VLM proposal in this frame, prompt
+    SAM with the bbox as a geometric prompt. SAM returns the tight pixel
+    mask of whatever object is in that bbox, with built-in presence
+    rejection — empty boxes (wall, sky) collapse the score below the
+    confidence threshold and the head returns N=0 masks (silently dropped).
+    The resulting Mask carries source="vlm" + the VLM phrase.
+
+    The legacy auto-prompt pass (generic text prompts like "object",
+    "furniture") was removed in v3. The VLM proposer enumerates objects
+    far more reliably than generic phrases, and the auto-prompt pass
+    contributed zero unique annotations on demo_v7 — every cluster's
+    anchor came from a box-prompted mask.
+
+    ``proposals_by_frame`` maps frame_name -> [(phrase, bbox_norm, confidence)].
+    bbox_norm is in TOP-LEFT-corner-normalized [(x, y, w, h)] in [0, 1] —
+    matches what proposer.Proposal.bbox_norm produces. Internally we convert
+    to SAM's expected center-normalized [cx, cy, w, h] format.
+
+    Frames with no VLM proposals contribute zero masks (and zero SAM cost).
     """
     import logfire
     import torch
 
+    sid = scene_id or scene_dir.name
     cameras = json.loads((scene_dir / "cameras.json").read_text())
     frame_dir = scene_dir / "frames"
     processor = build_generator()
     backend = "sam3"
-    prompts = _resolve_prompts()
+    proposals_by_frame = proposals_by_frame or {}
 
     device = _device()
     use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
@@ -212,8 +281,9 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
     )
 
     masks: list[Mask] = []
-    mask_count_per_prompt: dict[str, int] = {p: 0 for p in prompts}
     total_dedup_dropped = 0
+    box_masks_kept = 0
+    box_masks_rejected_no_object = 0
 
     with autocast_ctx, torch.inference_mode():
         for idx in keyframes:
@@ -225,26 +295,58 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
                     continue
                 frame_path = sorted_frames[idx]
 
+            frame_proposals = proposals_by_frame.get(frame_path.name, [])
+            if not frame_proposals:
+                # No VLM proposals for this frame → skip SAM entirely.
+                # Avoids the cost of set_image (vision backbone forward) on
+                # frames that contribute nothing.
+                continue
+
             img = Image.open(frame_path).convert("RGB")
             frame_masks: list[Mask] = []
             with logfire.span(
                 "segmentation.sam3.keyframe",
+                scene_id=sid,
                 keyframe_idx=idx,
                 frame_name=frame_path.name,
                 backend=backend,
-                prompt_count=len(prompts),
+                vlm_box_count=len(frame_proposals),
             ) as span:
                 state = processor.set_image(img)
                 mask_id_offset = 0
-                for prompt in prompts:
-                    state = processor.set_text_prompt(prompt, state)
-                    prompt_masks = _state_to_masks(
-                        state, idx, frame_path.name, prompt, mask_id_offset
+
+                # Box-prompted segmentation using VLM proposals for this
+                # frame. Each iteration:
+                #   1. reset_all_prompts(state) — IN-PLACE mutation; returns
+                #      None, so don't reassign. Clears any prior box prompt.
+                #   2. Convert bbox_norm (top-left x,y,w,h) → (cx,cy,w,h).
+                #   3. add_geometric_prompt(box, label=True, state) → returns
+                #      the updated state with masks/scores filled in.
+                #   4. _state_to_box_masks: SAM may return N=0 if presence
+                #      score is below confidence_threshold (no object in
+                #      that bbox) — counted as rejected.
+                for phrase, bbox_norm, vlm_conf in frame_proposals:
+                    bx, by, bw, bh = bbox_norm
+                    if not (0.0 < bw <= 1.0 and 0.0 < bh <= 1.0):
+                        continue
+                    processor.reset_all_prompts(state)  # in-place
+                    cx = bx + bw / 2.0
+                    cy = by + bh / 2.0
+                    state = processor.add_geometric_prompt(
+                        [float(cx), float(cy), float(bw), float(bh)], True, state
                     )
-                    mask_count_per_prompt[prompt] += len(prompt_masks)
-                    mask_id_offset += len(prompt_masks)
-                    frame_masks.extend(prompt_masks)
-                # Within-frame near-duplicate suppression across prompts.
+                    box_masks = _state_to_box_masks(
+                        state, idx, frame_path.name, phrase, vlm_conf, mask_id_offset
+                    )
+                    if not box_masks:
+                        box_masks_rejected_no_object += 1
+                        continue
+                    box_masks_kept += len(box_masks)
+                    mask_id_offset += len(box_masks)
+                    frame_masks.extend(box_masks)
+
+                # Within-frame near-duplicate suppression (when the VLM
+                # named the same object two ways and both produced masks).
                 deduped, dropped = _dedup_per_frame(frame_masks, SAM3_DEDUP_IOU)
                 total_dedup_dropped += dropped
                 span.set_attribute("mask_count_raw", len(frame_masks))
@@ -254,13 +356,14 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
 
     with logfire.span(
         "segmentation.sam3.summary",
+        scene_id=sid,
         backend=backend,
-        prompt_list=",".join(prompts),
         keyframe_count=len(keyframes),
         total_masks=len(masks),
+        box_masks_kept=box_masks_kept,
+        box_masks_rejected_no_object=box_masks_rejected_no_object,
         dedup_dropped=total_dedup_dropped,
-    ) as span:
-        for p, c in mask_count_per_prompt.items():
-            span.set_attribute(f"mask_count[{p}]", c)
+    ):
+        pass
 
     return masks, backend

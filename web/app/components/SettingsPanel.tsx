@@ -2,7 +2,7 @@
 
 import { useId } from "react";
 
-import type { JobSettings } from "@/lib/types";
+import { VLM_MODEL_OPTIONS, type JobSettings, type VlmModelId } from "@/lib/types";
 
 export type { JobSettings };
 
@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: JobSettings = {
   target_long_side: 1920,
   segment: true,
   keyframes: 5,
+  vlm_model: "claude-haiku-4-5",
 };
 
 interface Props {
@@ -90,6 +91,31 @@ export function SettingsPanel({ value, onChange, durationS }: Props) {
           value={value.keyframes}
           onChange={(v) => set("keyframes", v)}
         />
+      )}
+
+      {value.segment && (
+        <Field label="VLM (routed through Pydantic AI Gateway)">
+          <div className="flex flex-col gap-1">
+            {VLM_MODEL_OPTIONS.map((opt) => {
+              const active = (value.vlm_model ?? "claude-haiku-4-5") === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => set("vlm_model", opt.id as VlmModelId)}
+                  className={`flex items-center justify-between rounded-md border px-3 py-1.5 font-mono text-[11px] transition ${
+                    active
+                      ? "border-accent-400/60 bg-accent-500/15 text-accent-200"
+                      : "border-ink-700 bg-ink-900 text-ink-400 hover:border-ink-600"
+                  }`}
+                >
+                  <span className="uppercase tracking-wider">{opt.label}</span>
+                  <span className="text-[10px] text-ink-500">{opt.cost}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Field>
       )}
     </div>
   );

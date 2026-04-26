@@ -1,11 +1,23 @@
 import { z } from "zod";
 
+// Allowed VLM models routed through Pydantic AI Gateway. This is the
+// closed-list backend twin of VLM_MODEL_OPTIONS in web/app/lib/types.ts;
+// keep the two in sync. Adding a new model is a one-line change here +
+// the matching ID in shared.gateway → Modal env (VLM_MODEL=<id>).
+export const VlmModelId = z.enum([
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+]);
+export type VlmModelId = z.infer<typeof VlmModelId>;
+
 export const Settings = z.object({
   fps: z.number().min(0.5).max(10).default(2.0),
   max_frames: z.number().int().min(10).max(800).default(400),
   target_long_side: z.number().int().min(480).max(3840).default(1920),
   segment: z.boolean().default(true),
   keyframes: z.number().int().min(2).max(30).default(5),
+  vlm_model: VlmModelId.optional(),
 });
 export type Settings = z.infer<typeof Settings>;
 

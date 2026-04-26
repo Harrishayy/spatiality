@@ -1,17 +1,13 @@
 "use client";
 
 import type { Manifest, Stage, StageStatus } from "@/lib/types";
-import { useUI } from "@/store/ui";
+import { useUI, type DrillStage } from "@/store/ui";
 
 // Visible stages in the panel. The internal "splat" stage (voxel-downsample
 // of VGGT surfels into the small splat.ply that segmentation clusters over)
 // is hidden — the viewer doesn't render that output and it's confusing to
 // surface to a user. Pipeline manifest still tracks it; we just don't show it.
-const STAGE_ORDER: (keyof Manifest["stages"])[] = [
-  "capture",
-  "poses",
-  "segmentation",
-];
+const STAGE_ORDER: DrillStage[] = ["capture", "poses", "segmentation"];
 
 const LABEL: Record<keyof Manifest["stages"], string> = {
   capture: "Capture",
@@ -28,6 +24,7 @@ function formatPointCount(n: number): string {
 
 export function PipelineProgress({ manifest }: { manifest: Manifest }) {
   const cloudStats = useUI((s) => s.cloudStats);
+  const setOpenStage = useUI((s) => s.setOpenStage);
   return (
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
@@ -42,16 +39,23 @@ export function PipelineProgress({ manifest }: { manifest: Manifest }) {
         {STAGE_ORDER.map((key, i) => (
           <li
             key={key}
-            className={[
-              "flex items-center justify-between gap-3 px-3 py-2",
-              i > 0 ? "border-t border-ink-800" : "",
-            ].join(" ")}
+            className={i > 0 ? "border-t border-ink-800" : ""}
           >
-            <div className="flex items-center gap-3">
-              <StatusDot status={manifest.stages[key].status} />
-              <span className="text-sm text-ink-200">{LABEL[key]}</span>
-            </div>
-            <DurationOrExtra stage={manifest.stages[key]} />
+            <button
+              type="button"
+              onClick={() => setOpenStage(key)}
+              className="group flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-ink-800/40"
+              title="View live trace for this stage"
+            >
+              <div className="flex items-center gap-3">
+                <StatusDot status={manifest.stages[key].status} />
+                <span className="text-sm text-ink-200">{LABEL[key]}</span>
+                <span className="font-mono text-[10px] text-ink-700 opacity-0 transition group-hover:opacity-100">
+                  view trace ↗
+                </span>
+              </div>
+              <DurationOrExtra stage={manifest.stages[key]} />
+            </button>
           </li>
         ))}
       </ol>

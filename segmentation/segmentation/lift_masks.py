@@ -20,6 +20,14 @@ Background masks (walls, floor, ceiling) absorb a huge fraction of the
 splat. Track Gaussian sets above `bg_fraction` are dropped before the VLM
 ever sees them.
 
+Placement-accuracy improvements over v1:
+
+* Centroid uses the *opacity-weighted geometric median* (Weiszfeld) rather
+  than the arithmetic mean. Breakdown point ~50% vs ~25% for the mean even
+  after MAD trimming — a few survivor outliers no longer drag the centroid.
+* Bounding box uses the *5th–95th percentile per axis* rather than absolute
+  min/max. A single stray Gaussian per axis no longer blows the box up.
+
 The Cluster dataclass is reused from lift.py so the rest of the pipeline
 (vlm.label_clusters, cli._to_annotations) is untouched.
 """
@@ -96,6 +104,65 @@ def _project_all(
     u = np.rint(pix[:, 0]).astype(np.int32)
     v = np.rint(pix[:, 1]).astype(np.int32)
     return u, v, z_cam
+
+
+# ─── robust statistics ───────────────────────────────────────────────────
+
+
+def _geometric_median(
+    pts: np.ndarray, weights: np.ndarray | None = None, iters: int = 12, eps: float = 1e-7
+) -> np.ndarray:
+    """Weighted geometric median via Weiszfeld iteration.
+
+    L1-style estimator: minimises Σ wᵢ ‖pᵢ - x‖. Breakdown point 50%, vs
+    ~25% for MAD-trimmed mean — a handful of stray Gaussians can no longer
+    drag the centroid the way they did with `pts.mean(axis=0)`.
+    """
+    if pts.shape[0] == 0:
+        return np.zeros(3, dtype=np.float32)
+    if pts.shape[0] == 1:
+        return pts[0].astype(np.float32, copy=True)
+    w = (
+        np.ones(pts.shape[0], dtype=np.float64)
+        if weights is None
+        else np.asarray(weights, dtype=np.float64)
+    )
+    # Init at the weighted mean — close enough to the median that the
+    # iteration converges in 5-10 steps.
+    wsum = max(float(w.sum()), 1e-9)
+    x = (w[:, None] * pts).sum(axis=0) / wsum
+    for _ in range(iters):
+        d = np.linalg.norm(pts - x, axis=1)
+        # Avoid div-by-zero when a query point coincides with a sample.
+        wd = w / np.maximum(d, eps)
+        wd_sum = wd.sum()
+        if wd_sum < 1e-12:
+            break
+        x_new = (wd[:, None] * pts).sum(axis=0) / wd_sum
+        if np.linalg.norm(x_new - x) < eps:
+            x = x_new
+            break
+        x = x_new
+    return x.astype(np.float32)
+
+
+def _percentile_aabb(
+    pts: np.ndarray, lo_pct: float = 5.0, hi_pct: float = 95.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Robust axis-aligned bbox: use lo/hi percentiles, not min/max.
+
+    Single stray Gaussian per axis no longer blows the bbox out 10×.
+    Keeps the AABB shape (so the viewer doesn't change), but the box hugs
+    the object's actual extent within the chosen percentile band.
+    """
+    if pts.shape[0] == 0:
+        z = np.zeros(3, dtype=np.float32)
+        return z, z
+    if pts.shape[0] < 8:
+        return pts.min(axis=0).astype(np.float32), pts.max(axis=0).astype(np.float32)
+    lo = np.percentile(pts, lo_pct, axis=0).astype(np.float32)
+    hi = np.percentile(pts, hi_pct, axis=0).astype(np.float32)
+    return lo, hi
 
 
 # ─── Jaccard / union-find ────────────────────────────────────────────────
@@ -258,6 +325,7 @@ def cluster_via_masks(
     bg_fraction: float = 0.45,
     min_track_size: int = 40,
     max_clusters: int = 30,
+    scene_id: str | None = None,
 ) -> list[Cluster]:
     """Mask-projection lift. Drop-in replacement for lift.cluster().
 
@@ -265,10 +333,12 @@ def cluster_via_masks(
     interchangeably — both implement the Mask dataclass. Provenance flows into
     each Cluster's `sources` and `proposed_phrase` fields.
     """
+    sid = scene_id or scene_dir.name
     mask_count_sam = sum(1 for m in masks if m.source == "sam")
     mask_count_vlm = sum(1 for m in masks if m.source == "vlm")
     with logfire.span(
         "segmentation.lift.cluster",
+        scene_id=sid,
         method="masks",
         mask_count=len(masks),
         mask_count_sam=mask_count_sam,
@@ -335,7 +405,7 @@ def cluster_via_masks(
         # their back-side Gaussians.
         depth_eps = max(0.10, 0.02 * scene_extent)
 
-        with logfire.span("segmentation.lift.project", frame_count=len(cam_by_frame)):
+        with logfire.span("segmentation.lift.project", scene_id=sid, frame_count=len(cam_by_frame)):
             proj_by_frame: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
             zbuf_by_frame: dict[str, np.ndarray] = {}
             # Cache (h, w) per frame from any mask in that frame.
@@ -360,6 +430,16 @@ def cluster_via_masks(
                 if in_bounds.any():
                     bidx = np.flatnonzero(in_bounds)
                     np.minimum.at(zbuf, (v[bidx], u[bidx]), z[bidx])
+                # splat.ply is voxel-downsampled (~1.3 M Gaussians) so most
+                # mask pixels don't have a Gaussian projecting onto them —
+                # the raw zbuf is nearly all `inf` between the few dense
+                # foreground hits. Dilate (min-filter) so foreground depth
+                # propagates into gaps; without this the per-pixel "is this
+                # the front?" test becomes trivially true for any
+                # background Gaussian at a gap pixel, and the cluster
+                # picks up the entire wall behind a small object.
+                from scipy.ndimage import minimum_filter
+                zbuf = minimum_filter(zbuf, size=7)
                 zbuf_by_frame[frame_name] = zbuf
 
         # Step 2: per-mask Gaussian set (indices into the kept array). Now
@@ -368,6 +448,7 @@ def cluster_via_masks(
         # the cluster.
         with logfire.span(
             "segmentation.lift.hits",
+            scene_id=sid,
             mask_count=len(masks),
             depth_eps=depth_eps,
         ):
@@ -412,6 +493,7 @@ def cluster_via_masks(
         # Step 4: cross-frame mask grouping by Jaccard over Gaussian sets.
         with logfire.span(
             "segmentation.lift.merge",
+            scene_id=sid,
             mask_count=len(filtered),
             jaccard_min=jaccard_min,
         ):
@@ -436,25 +518,90 @@ def cluster_via_masks(
             global_idx = kept_idx[union]
             pts = centers[global_idx]
 
-            # Robust centroid: drop residual outliers via MAD (median + 2.5σ).
-            # The depth z-buffer in step 2 catches occlusion-bleed Gaussians;
-            # this catches the long-tail noise from depth-prediction wisps
-            # near silhouette edges. Cheap (~5 ms per cluster) and keeps the
-            # centroid pinned to the dense core of the object.
-            if pts.shape[0] >= 16:
-                median_xyz = np.median(pts, axis=0)
-                dist = np.linalg.norm(pts - median_xyz, axis=1)
-                mad = float(np.median(dist))
-                if mad > 1e-6:
-                    sigma = mad * 1.4826
-                    inliers = dist < (sigma * 2.5)
-                    if inliers.sum() >= max(8, min_track_size // 2):
+            # Anchor frame's camera = the viewpoint the SAM mask came from.
+            # Pick the frame with the largest mask area (this is also the
+            # cluster's anchor used for the VLM crop later).
+            sam_in_group_pre = [i for i in g if filtered_masks[i].source == "sam"]
+            anchor_pool_pre = sam_in_group_pre if sam_in_group_pre else g
+            anchor_local_pre = max(
+                anchor_pool_pre, key=lambda i: filtered_masks[i].area
+            )
+            anchor_pre = filtered_masks[anchor_local_pre]
+            anchor_cam = cam_by_frame.get(anchor_pre.frame_name)
+
+            # Depth-mode filter (along anchor camera ray) — the actual fix
+            # for multimodal clusters where SAM masks accidentally chain
+            # foreground + background through occlusion. Histogram the
+            # cluster's depths from the anchor viewpoint, find the dense
+            # peak, keep only points within depth_eps of that peak.
+            if anchor_cam is not None and pts.shape[0] >= 16:
+                ext = np.asarray(anchor_cam["extrinsic"], dtype=np.float32)
+                homo = np.concatenate(
+                    [pts, np.ones((pts.shape[0], 1), dtype=pts.dtype)], axis=1
+                )
+                cam_pts = homo @ ext.T
+                depths = cam_pts[:, 2]
+                # Restrict to points actually in front of anchor camera.
+                front = depths > 1e-6
+                if front.any():
+                    front_depths = depths[front]
+                    # 50-bin depth histogram → find densest layer.
+                    bins = max(20, min(60, front_depths.size // 8))
+                    hist, edges = np.histogram(front_depths, bins=bins)
+                    mode_bin = int(np.argmax(hist))
+                    mode_depth = float(0.5 * (edges[mode_bin] + edges[mode_bin + 1]))
+                    # Keep points within depth_eps of the mode (in metres,
+                    # same scale as the per-frame depth_eps from step 2).
+                    inliers = (
+                        front
+                        & (np.abs(depths - mode_depth) < depth_eps)
+                    )
+                    n_in = int(inliers.sum())
+                    if n_in >= max(8, min_track_size // 2) and n_in < pts.shape[0]:
                         pts = pts[inliers]
                         global_idx = global_idx[inliers]
 
-            centroid = pts.mean(axis=0)
-            bbox_lo = pts.min(axis=0)
-            bbox_hi = pts.max(axis=0)
+            # Final iterative MAD pass: trims silhouette wisps still present
+            # after the depth-mode filter.
+            if pts.shape[0] >= 16:
+                for _round in range(2):
+                    median_xyz = np.median(pts, axis=0)
+                    dist = np.linalg.norm(pts - median_xyz, axis=1)
+                    mad = float(np.median(dist))
+                    if mad <= 1e-6:
+                        break
+                    sigma = mad * 1.4826
+                    inliers = dist < (sigma * 2.0)
+                    n_in = int(inliers.sum())
+                    if n_in == pts.shape[0] or n_in < max(8, min_track_size // 2):
+                        break
+                    pts = pts[inliers]
+                    global_idx = global_idx[inliers]
+
+            # Bbox-diagonal sanity cap. Cheap O(1) safety net for runaway
+            # leaks: any cluster whose 3D AABB diagonal exceeds 2.5m is
+            # almost certainly leaked (a door is ~2.2m diag, a bed ~2.2m,
+            # a curtain ~2.5m). Drop it rather than emit a centroid
+            # floating in empty space.
+            if pts.shape[0] >= 16:
+                diag = float(
+                    np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+                )
+                if diag > 2.5:
+                    dropped_min_track += 1
+                    continue
+
+            # Opacity-weighted geometric median centroid. If opacity is
+            # available, weight by sigmoid(opacity) so dense surface
+            # Gaussians dominate over transparent wisps that survived the
+            # depth-mode + MAD filters; otherwise weight uniformly.
+            if opacity is not None:
+                op_kept = opacity[global_idx]
+                w_centroid = 1.0 / (1.0 + np.exp(-op_kept.astype(np.float64)))
+            else:
+                w_centroid = None
+            centroid = _geometric_median(pts, w_centroid)
+            bbox_lo, bbox_hi = _percentile_aabb(pts, lo_pct=5.0, hi_pct=95.0)
             # Anchor: prefer real SAM masks for tight crops; VLM bboxes are loose
             # rectangles. Fall back to VLM if no SAM mask is in the group.
             sam_in_group = [i for i in g if filtered_masks[i].source == "sam"]
@@ -506,6 +653,316 @@ def cluster_via_masks(
             except OSError:
                 pass
         return clusters
+
+
+# ─── Post-cluster dedup: merge near-duplicate clusters ───────────────────
+
+
+_MERGE_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "with", "of", "on", "in", "to", "for",
+    "is", "at", "by", "from", "this", "that",
+})
+
+
+def _label_tokens(label: str) -> set[str]:
+    """Lowercased content tokens length >= 3, minus stopwords."""
+    import re
+    return {
+        w for w in re.findall(r"\w+", label.lower())
+        if len(w) >= 3 and w not in _MERGE_STOPWORDS
+    }
+
+
+def _label_similar(a: str, b: str, *, jaccard_min: float = 0.40) -> bool:
+    """Two cluster labels refer to the same object class.
+
+    Match if EITHER:
+      - Token-Jaccard ≥ jaccard_min (e.g. "white door frame" vs "white door
+        with handle" share {white, door} → 2/4 = 0.5).
+      - One label is a substring of the other (case-insensitive).
+    """
+    if not a or not b:
+        return False
+    al, bl = a.lower().strip(), b.lower().strip()
+    if al == bl or al in bl or bl in al:
+        return True
+    ta, tb = _label_tokens(a), _label_tokens(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / len(ta | tb) >= jaccard_min
+
+
+def merge_duplicate_clusters(
+    scene_dir: Path,
+    clusters: list[Cluster],
+    *,
+    proximity_m: float = 0.6,
+    label_jaccard_min: float = 0.40,
+) -> dict:
+    """Merge clusters that are duplicate views of the same object.
+
+    Two clusters merge iff:
+      1. Their proposed_phrases are similar (token-Jaccard >= label_jaccard_min,
+         OR one is a substring of the other), AND
+      2. ‖A.centroid − B.centroid‖ < proximity_m.
+
+    Both conditions must hold — proximity alone over-merges adjacent objects
+    (laptop + monitor on same desk), and label alone over-merges instances
+    of the same class in different rooms.
+
+    The merge is transitive (union-find): if A ~ B and B ~ C, all three
+    collapse into one cluster.
+
+    Per merged group, the surviving cluster has:
+      - gaussian_indices: union of all members' indices (deduped)
+      - centroid: opacity-weighted geometric median of the union's positions
+      - bbox_3d: 5/95 percentile AABB of the union's positions
+      - id: the largest-anchor member's id (preserves stable IDs)
+      - proposed_phrase: highest-confidence member's phrase
+      - sources / anchor_frame / anchor_mask_bbox / anchor_area: from the
+        member with the largest anchor area (best crop for VLM labeling)
+
+    Mutates `clusters` in place — replaces its contents. Returns a stats
+    dict for observability.
+    """
+    n = len(clusters)
+    if n < 2:
+        return {"input": n, "output": n, "merged_groups": 0, "merges": 0}
+
+    centroids = np.stack([np.asarray(c.centroid, dtype=np.float32) for c in clusters], axis=0)
+
+    # Pairwise centroid distances + label-similarity → union-find.
+    uf = _UF(n)
+    pair_count = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(centroids[i] - centroids[j]))
+            if d >= proximity_m:
+                continue
+            if not _label_similar(
+                clusters[i].proposed_phrase,
+                clusters[j].proposed_phrase,
+                jaccard_min=label_jaccard_min,
+            ):
+                continue
+            uf.union(i, j)
+            pair_count += 1
+
+    # Group by union root.
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(uf.find(i), []).append(i)
+
+    if all(len(g) == 1 for g in groups.values()):
+        return {"input": n, "output": n, "merged_groups": 0, "merges": 0}
+
+    # Need centers + opacity for re-computing the merged centroid.
+    centers, opacity = _load_centers_with_opacity(scene_dir / "splat.ply")
+    n_centers = int(centers.shape[0])
+
+    merged: list[Cluster] = []
+    merges_applied = 0
+    for root, members in sorted(groups.items()):
+        if len(members) == 1:
+            merged.append(clusters[members[0]])
+            continue
+        merges_applied += 1
+
+        # Union of Gaussian indices. Defensive clip — stale clusters could
+        # carry indices from a different splat.
+        idx_pool = np.concatenate([
+            np.asarray(clusters[m].gaussian_indices, dtype=np.int64)
+            for m in members
+        ])
+        idx_pool = np.unique(idx_pool[(idx_pool >= 0) & (idx_pool < n_centers)])
+
+        pts = centers[idx_pool]
+        if opacity is not None:
+            w = 1.0 / (1.0 + np.exp(-opacity[idx_pool].astype(np.float64)))
+        else:
+            w = None
+
+        new_centroid = _geometric_median(pts, w)
+        new_lo, new_hi = _percentile_aabb(pts, lo_pct=5.0, hi_pct=95.0)
+
+        # Anchor: pick the member with the largest anchor area for the best
+        # crop downstream (VLM labeling reads this anchor frame + mask).
+        anchor_member = max(members, key=lambda m: clusters[m].anchor_area)
+        anchor = clusters[anchor_member]
+
+        # Phrase: pick the member with the highest-confidence proposed_phrase.
+        # We don't have per-cluster confidence directly; use anchor_area as
+        # a reasonable proxy for "this view actually saw it big and clear."
+        phrase_member = max(
+            members, key=lambda m: (clusters[m].anchor_area, len(clusters[m].proposed_phrase))
+        )
+        phrase = clusters[phrase_member].proposed_phrase
+
+        union_sources: set[str] = set()
+        for m in members:
+            union_sources.update(clusters[m].sources)
+
+        merged.append(
+            Cluster(
+                id=anchor.id,
+                gaussian_indices=idx_pool.tolist(),
+                centroid=new_centroid,
+                bbox_3d=(
+                    (float(new_lo[0]), float(new_lo[1]), float(new_lo[2])),
+                    (float(new_hi[0]), float(new_hi[1]), float(new_hi[2])),
+                ),
+                anchor_frame=anchor.anchor_frame,
+                anchor_mask_bbox=anchor.anchor_mask_bbox,
+                anchor_area=anchor.anchor_area,
+                sources=tuple(sorted(union_sources)),
+                proposed_phrase=phrase,
+            )
+        )
+
+    clusters[:] = merged
+    return {
+        "input": n,
+        "output": len(clusters),
+        "merged_groups": merges_applied,
+        "merges": pair_count,
+    }
+
+
+def merge_annotations_by_label(
+    annotations,  # list[Annotation]
+    *,
+    proximity_m: float = 0.6,
+    label_jaccard_min: float = 0.30,
+):
+    """Second-stage dedup operating on FINAL VLM labels (post-labeling).
+
+    The pre-VLM `merge_duplicate_clusters` gates on each cluster's
+    `proposed_phrase` — the proposer's per-keyframe hint, which varies wildly
+    across views ("doorway" vs "white frame" vs "door with hook"). The same
+    physical door produces dissimilar proposed_phrases, escapes that merge,
+    then receives 7 different VLM labels that all share the literal token
+    "door". This pass catches that residual.
+
+    Two annotations merge iff:
+      1. Their final labels are similar (token-Jaccard >= label_jaccard_min,
+         or one is a substring of the other), AND
+      2. ‖A.centroid − B.centroid‖ < proximity_m.
+
+    The merge is transitive (union-find): if A ~ B and B ~ C, all three
+    collapse into one annotation.
+
+    Per merged group, the survivor:
+      - bbox = AABB enclosing all component bboxes
+      - centroid = MIDPOINT of that AABB (NOT geometric median over partial
+        face Gaussians — partial views bias the median to whichever face had
+        the largest anchor area)
+      - id, label, color, confidence, alternatives = highest-confidence member,
+        with any leading "duplicate_of:..." alternatives stripped (the survivor
+        is canonical)
+      - cluster_gaussian_indices = unique union
+      - provenance = sorted union
+
+    Returns (merged_list, stats_dict).
+    """
+    n = len(annotations)
+    stats = {"input": n, "output": n, "merged_groups": 0, "merges": 0}
+    if n < 2:
+        return list(annotations), stats
+
+    centroids = np.stack(
+        [np.asarray(a.centroid, dtype=np.float32) for a in annotations], axis=0
+    )
+
+    uf = _UF(n)
+    pair_count = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(centroids[i] - centroids[j]))
+            if d >= proximity_m:
+                continue
+            if not _label_similar(
+                annotations[i].label,
+                annotations[j].label,
+                jaccard_min=label_jaccard_min,
+            ):
+                continue
+            uf.union(i, j)
+            pair_count += 1
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(uf.find(i), []).append(i)
+
+    if all(len(g) == 1 for g in groups.values()):
+        return list(annotations), stats
+
+    merged = []
+    merges_applied = 0
+    for root, members in sorted(groups.items()):
+        if len(members) == 1:
+            merged.append(annotations[members[0]])
+            continue
+        merges_applied += 1
+
+        # Bbox-midpoint centroid: union AABB of all component bboxes, midpoint.
+        los = np.stack(
+            [np.asarray(annotations[m].bbox[0], dtype=np.float32) for m in members]
+        )
+        his = np.stack(
+            [np.asarray(annotations[m].bbox[1], dtype=np.float32) for m in members]
+        )
+        lo = los.min(axis=0)
+        hi = his.max(axis=0)
+        new_centroid = ((lo + hi) * 0.5).tolist()
+        new_bbox = (
+            (float(lo[0]), float(lo[1]), float(lo[2])),
+            (float(hi[0]), float(hi[1]), float(hi[2])),
+        )
+
+        # Survivor = highest-confidence member.
+        survivor_idx = max(members, key=lambda m: annotations[m].confidence)
+        survivor = annotations[survivor_idx]
+
+        # Union of Gaussian indices (deduped).
+        idx_pool: list[int] = []
+        seen: set[int] = set()
+        for m in members:
+            for v in annotations[m].cluster_gaussian_indices:
+                if v not in seen:
+                    seen.add(v)
+                    idx_pool.append(int(v))
+
+        # Provenance: sorted union.
+        prov_set: set[str] = set()
+        for m in members:
+            prov_set.update(annotations[m].provenance)
+
+        # Strip any leading "duplicate_of:" alternatives from the survivor —
+        # the survivor IS the canonical now.
+        alts = [
+            a for a in survivor.alternatives if not str(a).startswith("duplicate_of:")
+        ]
+
+        merged_ann = type(survivor)(
+            id=survivor.id,
+            label=survivor.label,
+            centroid=(float(new_centroid[0]), float(new_centroid[1]), float(new_centroid[2])),
+            bbox=new_bbox,
+            color=survivor.color,
+            confidence=survivor.confidence,
+            alternatives=alts,
+            cluster_gaussian_indices=idx_pool,
+            provenance=sorted(prov_set),
+        )
+        merged.append(merged_ann)
+
+    stats = {
+        "input": n,
+        "output": len(merged),
+        "merged_groups": merges_applied,
+        "merges": pair_count,
+    }
+    return merged, stats
 
 
 # ─── VLM proposal bridge ──────────────────────────────────────────────────

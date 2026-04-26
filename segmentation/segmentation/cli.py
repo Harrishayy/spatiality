@@ -157,39 +157,55 @@ def _run_stub(scene: Path, args: argparse.Namespace) -> tuple[AnnotationsFile, f
 async def _gather_sources(
     scene: Path, keyframe_indices: list[int], args: argparse.Namespace
 ):
-    """Run SAM (in a worker thread) and the VLM proposer (async) concurrently.
+    """Run VLM proposer first, then SAM (auto-prompt + box-prompt) using its bboxes.
+
+    Old approach: SAM auto-prompt and VLM proposer ran in parallel; VLM
+    bboxes became RECTANGULAR masks via proposals_to_masks — those rectangles
+    polluted clusters with whatever Gaussians shared the bbox area.
+
+    New approach: VLM bboxes become geometric prompts to SAM 3.1, which
+    returns the TIGHT pixel mask of the actual object inside the bbox (with
+    SAM's built-in presence-token rejection for empty / hallucinated boxes).
+    Phrase rides along on the resulting Mask for downstream labeling.
+    Latency cost: VLM proposer (~1–3 s, fully cached on re-runs) added to
+    the critical path before SAM.
 
     Returns (sam_masks, sam_backend, vlm_proposals).
     """
     from . import sam as _sam
 
-    sam_coro = (
-        asyncio.to_thread(_sam.run, scene, keyframe_indices)
-        if not args.no_sam
-        else _empty_sam()
-    )
     if args.no_vlm_proposals:
-        vlm_coro = _empty_vlm()
+        vlm_proposals = []
     else:
         from . import proposer as _proposer
 
-        vlm_coro = _wrap_vlm_proposals(_proposer.propose(scene, keyframe_indices))
+        vlm_proposals = await _wrap_vlm_proposals(
+            _proposer.propose(scene, keyframe_indices, scene_id=args.scene_id),
+            scene_id=args.scene_id,
+        )
 
-    (sam_masks, sam_backend), vlm_proposals = await asyncio.gather(sam_coro, vlm_coro)
+    if args.no_sam:
+        return [], "skipped", vlm_proposals
+
+    # Group proposals per frame for SAM box-prompting. Dedup phrases per
+    # frame (if VLM named the same object two ways in one image, one box
+    # is enough).
+    proposals_by_frame: dict[str, list[tuple[str, tuple[float, float, float, float], float]]] = {}
+    for p in vlm_proposals:
+        bucket = proposals_by_frame.setdefault(p.frame_name, [])
+        if any(existing == p.phrase for existing, _, _ in bucket):
+            continue
+        bucket.append((p.phrase, tuple(p.bbox_norm), float(p.confidence)))
+
+    sam_masks, sam_backend = await asyncio.to_thread(
+        _sam.run, scene, keyframe_indices, proposals_by_frame, args.scene_id
+    )
     return sam_masks, sam_backend, vlm_proposals
 
 
-async def _empty_sam():
-    return [], "skipped"
-
-
-async def _empty_vlm():
-    return []
-
-
-async def _wrap_vlm_proposals(coro):
+async def _wrap_vlm_proposals(coro, scene_id: str = ""):
     """Logfire span around the proposer + tolerant return on failure."""
-    with logfire.span(SPAN_SEGMENTATION_VLM_PROPOSAL) as span:
+    with logfire.span(SPAN_SEGMENTATION_VLM_PROPOSAL, scene_id=scene_id) as span:
         try:
             proposals = await coro
         except Exception as e:
@@ -220,6 +236,7 @@ def _run_real(
         scene_id=args.scene_id,
         keyframe_count=len(keyframe_indices),
         mask_count=len(sam_masks),
+        vlm_proposal_count=len(vlm_proposals),
         backend=backend,
     ):
         pass  # detail spans live inside sam.run / proposer.propose
@@ -227,10 +244,29 @@ def _run_real(
     if args.lift_mode == "masks":
         from . import lift_masks as _lift_masks
 
-        vlm_masks = _lift_masks.proposals_to_masks(vlm_proposals, scene)
+        # sam_masks now contains BOTH auto-prompt SAM masks (generic
+        # discovery) and box-prompted SAM masks (tight boundaries from VLM
+        # bboxes, tagged source="vlm" with the VLM phrase). No more
+        # rectangle conversion — every mask is a real boundary.
         clusters = _lift_masks.cluster_via_masks(
-            scene, sam_masks + vlm_masks, jaccard_min=args.jaccard_min
+            scene, sam_masks, jaccard_min=args.jaccard_min, scene_id=args.scene_id
         )
+
+        # Post-cluster dedup: merge clusters whose proposed_phrases are
+        # similar AND centroids are within 1.5 m. The Jaccard merge in
+        # cluster_via_masks fails for cross-view box-prompted masks
+        # (same physical object, but each view captures different surfels)
+        # — this pass catches what Jaccard misses. Also pulls Gaussians
+        # from multiple views into one cluster so the centroid is the 3D
+        # center of the object, not a single visible face.
+        with logfire.span(
+            "segmentation.lift.merge_duplicates",
+            scene_id=args.scene_id,
+            cluster_count_pre=len(clusters),
+        ) as merge_span:
+            merge_stats = _lift_masks.merge_duplicate_clusters(scene, clusters)
+            for k, v in merge_stats.items():
+                merge_span.set_attribute(k, v)
     else:
         from . import lift as _lift
 
@@ -245,8 +281,32 @@ def _run_real(
         cluster_count=len(clusters),
     ) as vlm_span:
         t0 = time.perf_counter()
-        labels = _vlm.label_clusters(scene, clusters)
+        labels = _vlm.label_clusters(scene, clusters, scene_id=args.scene_id)
         annotations = _to_annotations(clusters, labels)
+
+        # Post-VLM dedup. The pre-VLM merge_duplicate_clusters gates on each
+        # cluster's proposed_phrase (a noisy per-keyframe hint), so cross-view
+        # duplicates of the same physical object slip through and reach the
+        # labeler as separate clusters. Final VLM labels are far more stable
+        # ("door" + "door" + "door"...), so re-running dedup on the labels
+        # collapses what the first pass missed. Bbox-midpoint replaces the
+        # partial-view geometric median on merged groups.
+        from . import lift_masks as _lift_masks_mod
+        with logfire.span(
+            "segmentation.annotations.merge_duplicates",
+            scene_id=args.scene_id,
+            annotation_count_pre=len(annotations.root),
+        ) as ann_merge_span:
+            merged_anns, ann_merge_stats = _lift_masks_mod.merge_annotations_by_label(
+                annotations.root
+            )
+            annotations = AnnotationsFile(root=merged_anns)
+            for k, v in ann_merge_stats.items():
+                ann_merge_span.set_attribute(k, v)
+            ann_merge_span.set_attribute(
+                "annotation_count_post", len(annotations.root)
+            )
+
         annotations.write_atomic(scene / "annotations.json")
         vlm_dur = time.perf_counter() - t0
         # Final, post-filter inventory so the demo's evidence span carries the
@@ -267,9 +327,7 @@ def _run_real(
         )
         vlm_span.set_attribute("annotation_count", len(annotations.root))
 
-    total_mask_count = len(sam_masks) + (
-        len(vlm_proposals) if args.lift_mode == "masks" else 0
-    )
+    total_mask_count = len(sam_masks)
     return (
         annotations,
         sources_dur,

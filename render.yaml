@@ -9,7 +9,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
-      # Cloudflare R2 — required for r2 mode (production path)
+      # ── Cloudflare R2 ──────────────────────────────────────────────────
+      # Bucket names + public read-base are public-by-design; account ID and
+      # keys are secrets and stay sync:false.
       - key: R2_ACCOUNT_ID
         sync: false
       - key: R2_ACCESS_KEY_ID
@@ -17,35 +19,38 @@ services:
       - key: R2_SECRET_ACCESS_KEY
         sync: false
       - key: R2_UPLOADS_BUCKET
-        value: glasses-twin-uploads
+        value: spatiality
       - key: R2_ARTIFACTS_BUCKET
-        value: glasses-twin-artifacts
+        value: spatiality-artifacts
       - key: R2_ARTIFACTS_PUBLIC_BASE
-        sync: false
-      # Modal endpoint URLs (printed by `modal deploy inference/modal_app.py`)
+        value: https://pub-009b69a9c7b3461da28959b5677d1091.r2.dev
+      # ── Modal endpoints (public *.modal.run URLs) ──────────────────────
       - key: MODAL_PROCESS_VIDEO_URL
-        sync: false
+        value: https://harrishayy21--process-video.modal.run
       - key: MODAL_GET_MANIFEST_URL
-        sync: false
-      # Allowed CORS origins (comma-separated)
+        value: https://harrishayy21--get-manifest.modal.run
+      - key: MODAL_INFERENCE_URL
+        value: https://harrishayy21--run-inference.modal.run
+      # ── CORS — own URLs only, safe to commit ───────────────────────────
       - key: CORS_ORIGINS
-        sync: false
-      # Existing
+        value: http://localhost:5173,http://localhost:3000,https://spatiality-web.onrender.com
+      # ── Pydantic AI Gateway ────────────────────────────────────────────
+      # URL is the standard EU proxy; key is the project secret.
       - key: PYDANTIC_GATEWAY_URL
-        sync: false
+        value: https://gateway-eu.pydantic.dev/proxy/anthropic/
       - key: PYDANTIC_GATEWAY_KEY
         sync: false
       - key: PYDANTIC_GATEWAY_REQUIRED
         value: "1"
+      # ── Logfire ────────────────────────────────────────────────────────
+      # Read URL is the regional API base; ingest + read tokens are secrets.
       - key: LOGFIRE_TOKEN
         sync: false
-      # Logfire READ token (separate from write/ingest token) — powers /api/trace
       - key: LOGFIRE_READ_TOKEN
         sync: false
       - key: LOGFIRE_READ_URL
         value: https://logfire-eu.pydantic.dev/v1/query
-      - key: MODAL_INFERENCE_URL
-        sync: false
+      # ── Render persistent disk mount ───────────────────────────────────
       - key: ARTIFACTS_PATH
         value: /var/data/artifacts
     disk:
@@ -64,14 +69,16 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      # All NEXT_PUBLIC_* are baked into the bundle and visible in the
+      # browser anyway — safe to commit. Pointing at the sibling agent
+      # service by its known onrender.com URL.
       - key: NEXT_PUBLIC_AGENT_URL
-        sync: false
+        value: https://spatiality-agent.onrender.com
       - key: NEXT_PUBLIC_R2_ARTIFACTS_PUBLIC_BASE
-        sync: false
+        value: https://pub-009b69a9c7b3461da28959b5677d1091.r2.dev
       - key: NEXT_PUBLIC_MODAL_GET_ARTIFACT_URL
-        sync: false
+        value: https://harrishayy21--get-artifact.modal.run
       - key: NEXT_PUBLIC_DEFAULT_MODE
         value: r2
-      # Browser deep-link to Logfire project (drives "Open in Logfire ↗" links in trace drawer)
       - key: NEXT_PUBLIC_LOGFIRE_PROJECT_URL
-        sync: false
+        value: https://logfire-eu.pydantic.dev/spatial/3d

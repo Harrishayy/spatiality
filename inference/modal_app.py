@@ -650,34 +650,80 @@ _ARTIFACT_CONTENT_TYPE = {
 }
 
 
+# Module-level latch so we don't spam Logfire with one warning per file
+# when the secret is missing. The first call surfaces the warning + an
+# attribute on the active span; subsequent calls are quiet.
+_no_creds_warned = False
+
+
 def _mirror_to_r2(scene_id: str, files: list[str]) -> None:
     """Push the given filenames from the Volume to R2_ARTIFACTS_BUCKET.
 
-    No-op when R2 creds or bucket name are missing — that's how local mode
-    skips R2 entirely.
+    No-op when R2 creds or bucket name are missing — but a loud no-op:
+    emits a Logfire warning the first time it happens and marks the active
+    span so the trace UI shows the skip. Previously this was a silent
+    `return` which is how the chat-annotations bug went unnoticed for so
+    long.
+
+    Each per-file PUT is wrapped in a `r2.mirror` Logfire span carrying
+    `status=ok|failed`, byte count, and any exception text — gives the
+    trace drawer per-mirror visibility instead of a stdout-only print.
     """
     import os
     from pathlib import Path
 
+    import logfire as _logfire
+
+    global _no_creds_warned
+
     bucket = os.environ.get("R2_ARTIFACTS_BUCKET")
     s3 = _r2_client()
     if not (bucket and s3):
+        reason = (
+            "missing R2_ARTIFACTS_BUCKET" if not bucket else "missing R2 creds"
+        )
+        # Mark the active span (whatever stage triggered this mirror) so
+        # the failure shows up where it actually originated.
+        try:
+            span = _logfire.current_span()
+            if span is not None:
+                span.set_attribute("r2_mirror_skipped", reason)
+        except Exception:  # noqa: BLE001 — telemetry-only, never raise.
+            pass
+        if not _no_creds_warned:
+            _logfire.warn(
+                "r2 mirror disabled — annotations / frames / masks will not "
+                "reach the public bucket; chat + scenes-page R2 reads will "
+                "404 until this is fixed",
+                scene_id=scene_id,
+                reason=reason,
+                bucket_set=bool(bucket),
+            )
+            _no_creds_warned = True
         return
     for name in files:
         src = Path(f"/artifacts/scenes/{scene_id}/{name}")
         if not src.exists():
             continue
         cache = "no-cache" if name == "manifest.json" else "public, max-age=31536000, immutable"
-        try:
-            s3.put_object(
-                Bucket=bucket,
-                Key=f"scenes/{scene_id}/{name}",
-                Body=src.read_bytes(),
-                ContentType=_ARTIFACT_CONTENT_TYPE.get(name, "application/octet-stream"),
-                CacheControl=cache,
-            )
-        except Exception as exc:
-            print(f"r2 mirror {name} failed: {exc!r}", flush=True)
+        with _logfire.span(
+            "r2.mirror", scene_id=scene_id, file=name, bucket=bucket
+        ) as span:
+            try:
+                body = src.read_bytes()
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=f"scenes/{scene_id}/{name}",
+                    Body=body,
+                    ContentType=_ARTIFACT_CONTENT_TYPE.get(name, "application/octet-stream"),
+                    CacheControl=cache,
+                )
+                span.set_attribute("status", "ok")
+                span.set_attribute("bytes", len(body))
+            except Exception as exc:  # noqa: BLE001 — never let mirror kill the pipeline
+                span.set_attribute("status", "failed")
+                span.set_attribute("error", str(exc)[:300])
+                print(f"r2 mirror {name} failed: {exc!r}", flush=True)
 
 
 def _mirror_manifest(scene_id: str) -> None:
@@ -1128,6 +1174,123 @@ _ALLOWED_ARTIFACTS = {
     "thumbnail.jpg",
     "manifest.json",
 }
+
+
+@app.function(
+    image=image,
+    timeout=600,
+    secrets=[R2_SECRET],
+    volumes={"/artifacts": artifacts_volume},
+    cpu=1.0,
+    memory=2048,
+)
+@modal.fastapi_endpoint(method="POST", label="r2-backfill")
+def r2_backfill(payload: dict):
+    """Re-mirror all standard artifacts for one scene_id from the Modal
+    Volume to R2. Use for scenes that ran before the mirror was wired up
+    (or before the R2 secret was attached) so their annotations / frames /
+    masks land on R2 without rerunning the full segmentation pipeline.
+
+    Body: {"scene_id": "demo_v7"}.
+
+    Mirrors: manifest.json, annotations.json, cameras.json, splat.ply,
+    points.ply, thumbnail.jpg (any that exist on the Volume) AND every
+    keyframe + per-object mask referenced by annotations.json (via
+    `_mirror_segmentation_evidence`).
+    """
+    from fastapi.responses import JSONResponse
+
+    scene_id = payload.get("scene_id")
+    if not isinstance(scene_id, str) or not scene_id:
+        return JSONResponse({"error": "scene_id required"}, status_code=400)
+
+    artifacts_volume.reload()
+    standard = [
+        "manifest.json",
+        "annotations.json",
+        "cameras.json",
+        "splat.ply",
+        "points.ply",
+        "thumbnail.jpg",
+    ]
+    _mirror_to_r2(scene_id, standard)
+    _mirror_segmentation_evidence(scene_id)
+    return JSONResponse({"status": "ok", "scene_id": scene_id, "mirrored": standard})
+
+
+@app.function(
+    image=image,
+    timeout=60,
+    secrets=[R2_SECRET],
+    cpu=0.25,
+    memory=512,
+)
+@modal.fastapi_endpoint(method="GET", label="r2-diagnose")
+def r2_diagnose():
+    """Probe whether the R2 mirror can actually write+read.
+
+    Returns JSON:
+      {
+        "creds_present": bool,         # all three R2_* secret vars set?
+        "bucket": str | null,          # configured artifacts bucket name
+        "put_ok": bool,                # PutObject succeeded against bucket
+        "get_ok": bool,                # subsequent GetObject succeeded
+        "error": str | null,           # exception text from whichever leg failed
+      }
+
+    Use after any R2 fix attempt to confirm the mirror can write before
+    retriggering segmentation. Probe key is `scenes/_diagnose/probe.txt`
+    so it doesn't collide with any real scene id (prefix `_`).
+    """
+    import os
+    import time
+    from fastapi.responses import JSONResponse
+
+    bucket = os.environ.get("R2_ARTIFACTS_BUCKET") or None
+    s3 = _r2_client()
+    creds_present = s3 is not None
+    put_ok = False
+    get_ok = False
+    error: str | None = None
+
+    if not (creds_present and bucket):
+        return JSONResponse(
+            {
+                "creds_present": creds_present,
+                "bucket": bucket,
+                "put_ok": False,
+                "get_ok": False,
+                "error": "missing R2 creds" if not creds_present else "missing R2_ARTIFACTS_BUCKET",
+            }
+        )
+
+    key = "scenes/_diagnose/probe.txt"
+    body = f"r2-diagnose at {time.time():.0f}".encode()
+    try:
+        s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/plain")
+        put_ok = True
+    except Exception as exc:  # noqa: BLE001
+        error = f"put: {exc!r}"
+
+    if put_ok:
+        try:
+            got = s3.get_object(Bucket=bucket, Key=key)
+            got_body = got["Body"].read()
+            get_ok = got_body == body
+            if not get_ok:
+                error = "get: body mismatch"
+        except Exception as exc:  # noqa: BLE001
+            error = f"get: {exc!r}"
+
+    return JSONResponse(
+        {
+            "creds_present": creds_present,
+            "bucket": bucket,
+            "put_ok": put_ok,
+            "get_ok": get_ok,
+            "error": error,
+        }
+    )
 
 
 @app.function(

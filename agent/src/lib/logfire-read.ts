@@ -59,18 +59,26 @@ export async function spansForScene(sceneId: string): Promise<SpanRow[]> {
   // scene_id explicitly — OTel attributes don't auto-propagate to children,
   // so filtering on `attributes->>'scene_id'` would drop every gen_ai.* span
   // from `instrument_anthropic()`, every modal.subprocess, and every nested
-  // segmentation.lift.* sub-stage. The subselect collects the trace_ids that
-  // touch this scene; the outer SELECT returns every span under those
-  // traces, so the waterfall shows the full hierarchy.
-  const sql = `SELECT span_id, parent_span_id, trace_id, span_name, start_timestamp, end_timestamp,
-       EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) * 1000 AS duration_ms,
-       EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) AS duration,
-       attributes, level
-FROM records
-WHERE trace_id IN (
-  SELECT DISTINCT trace_id FROM records WHERE attributes->>'scene_id' = '${safe}'
-)
-ORDER BY start_timestamp ASC`;
+  // segmentation.lift.* sub-stage. The inner SELECT collects the trace_ids
+  // that touch this scene; the JOIN returns every span under those traces.
+  //
+  // INNER JOIN — not `WHERE trace_id IN (SELECT DISTINCT ...)`. DataFusion
+  // (Logfire's query engine) returns
+  //   `type_coercion: expressions have incompatible types`
+  // for the IN-subquery form against `trace_id`, but handles JOIN cleanly.
+  // Same semantics, no error.
+  const sql = `SELECT r.span_id, r.parent_span_id, r.trace_id, r.span_name,
+       r.start_timestamp, r.end_timestamp,
+       EXTRACT(EPOCH FROM (r.end_timestamp - r.start_timestamp)) * 1000 AS duration_ms,
+       EXTRACT(EPOCH FROM (r.end_timestamp - r.start_timestamp)) AS duration,
+       r.attributes, r.level
+FROM records AS r
+INNER JOIN (
+  SELECT DISTINCT trace_id
+  FROM records
+  WHERE attributes->>'scene_id' = '${safe}'
+) AS t ON r.trace_id = t.trace_id
+ORDER BY r.start_timestamp ASC`;
 
   // Logfire's /v1/query is GET-only and returns column-major JSON
   // (`{ columns: [{ name, values: [...] }, ...] }`). The endpoint caps the

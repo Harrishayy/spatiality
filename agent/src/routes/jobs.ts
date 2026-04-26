@@ -28,8 +28,10 @@ export const jobsRoute: FastifyPluginAsync = async (app) => {
       settings: body.settings,
     });
     if (!fired.ok) {
+      // Body slice is logged server-side only — tracebacks can quote env
+      // values or internal paths, so we never echo them to the browser.
       request.log.error({ status: fired.status, body: fired.body.slice(-500) }, "process_video failed");
-      return reply.code(502).send({ error: "modal process_video failed", detail: fired.body.slice(-500) });
+      return reply.code(502).send({ error: "modal process_video failed" });
     }
     return { status: "queued", scene_id: body.scene_id, mode: body.mode };
   });

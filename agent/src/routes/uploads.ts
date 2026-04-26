@@ -87,11 +87,10 @@ export const uploadsRoute: FastifyPluginAsync = async (app) => {
     await unlink(tmpPath).catch(() => {});
 
     if (res.code !== 0) {
+      // stderr can quote auth headers or volume paths from the modal CLI —
+      // log it server-side, never echo to the browser.
       request.log.error({ stderr: res.stderr.slice(-500) }, "modal volume put failed");
-      return reply.code(500).send({
-        error: "modal volume put failed",
-        detail: res.stderr.slice(-500),
-      });
+      return reply.code(500).send({ error: "modal volume put failed" });
     }
 
     seenBySha.set(sha, { sceneId, modalPath });

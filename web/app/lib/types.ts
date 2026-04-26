@@ -10,6 +10,8 @@ export interface Annotation {
   confidence: number;
   alternatives?: string[];
   cluster_gaussian_indices?: number[];
+  provenance?: string[];
+  frame_ids?: string[];
 }
 
 export type StageStatus = "pending" | "running" | "complete" | "failed";
@@ -77,10 +79,9 @@ export const VLM_MODEL_OPTIONS = [
 
 export interface GatewayHealth {
   ok: boolean;
-  gateway_url: string;
-  key_fingerprint: string;
+  key_set: boolean;
+  region: "eu" | "us" | "unknown";
   probe_status: number | null;
-  probe_detail: string | null;
   latency_ms: number;
 }
 

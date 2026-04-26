@@ -53,17 +53,14 @@ function GatewayBadge() {
   }, []);
   if (error || (!health && !error)) return null;
   if (!health) return null;
-  const region = health.gateway_url.includes("-eu") ? "eu" : health.gateway_url.includes("-us") ? "us" : "?";
+  const keyTag = health.key_set ? "key:set" : "key:unset";
   return (
-    <a
-      href={health.gateway_url}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={`Routing through Pydantic AI Gateway · ${health.gateway_url}\nKey: ${health.key_fingerprint}\nProbe: ${health.probe_status ?? "n/a"} in ${health.latency_ms}ms`}
-      className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-300 hover:border-emerald-400/60"
+    <span
+      title={`Pydantic AI Gateway · ${health.region} · probe ${health.probe_status ?? "n/a"} in ${health.latency_ms}ms`}
+      className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-300"
     >
-      gateway:{region} · {health.key_fingerprint} · {health.latency_ms}ms
-    </a>
+      gateway:{health.region} · {keyTag} · {health.latency_ms}ms
+    </span>
   );
 }
 

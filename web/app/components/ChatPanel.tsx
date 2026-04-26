@@ -43,7 +43,7 @@ export function ChatPanel({ sceneId, messages, onSend, disabled }: Props) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder={disabled ? "Loading…" : "Ask about the scene…"}
+          placeholder={disabled ? "Waiting for segmentation…" : "Ask about the scene…"}
           disabled={disabled}
           className="lp-chat-input--field"
         />

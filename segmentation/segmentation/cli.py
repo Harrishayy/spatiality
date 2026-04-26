@@ -118,20 +118,14 @@ def main() -> None:
         mask_count = 0
         cluster_count = len(annotations.root)
 
-    # Build the wireframe artifact (viewer's Wireframe view mode). Done
-    # post-annotations so the per-object dense-point sets can be derived
-    # from each annotation's cluster_gaussian_indices. Best-effort: a
-    # missing points.ply just skips the artifact.
-    try:
-        from . import wireframe as _wireframe
-
-        _wireframe.build_wireframe(scene, args.scene_id)
-    except Exception as e:  # noqa: BLE001 — telemetry-only, do not fail the pipeline
-        logfire.warn(
-            "wireframe build failed",
-            scene_id=args.scene_id,
-            error=str(e)[:200],
-        )
+    # Wireframe artifact removed from the Modal pipeline — the viewer's
+    # Wireframe view mode is served by the in-browser fallback in
+    # SplatViewer.tsx (`sampleWireframeFromCloud`), which voxel-downsamples
+    # the already-loaded points.ply locally. The KDTree-based per-object
+    # sampler that used to live here added 30-60 s to every segmentation
+    # run with no UI consumer (`wireframe_index.json` is not read), so it's
+    # gone end-to-end. See note in segmentation/cli.py history if revival
+    # is needed.
 
     total = sam_dur + vlm_dur
     manifest = Manifest.read(manifest_path)

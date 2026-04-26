@@ -116,7 +116,7 @@ export default function ScenePage() {
             annotations={annos}
             messages={messages}
             onSend={send}
-            loading={!splatReady}
+            loading={!segReady}
             openSection={openSection}
             onToggleSection={(s) =>
               setOpenSection((prev) => (prev === s ? null : s))

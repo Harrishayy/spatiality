@@ -34,14 +34,13 @@ export function LandingHero() {
             Browse live demos
           </Link>
           <span className="lp-hero-meta">
-            <span className="lp-mono">~90s end-to-end · runs from any phone</span>
+            <span className="lp-mono">~250s for a 90s video · runs from any phone</span>
           </span>
         </div>
 
         <div className="lp-hero-stats">
-          <Stat label="reconstruction" value="<90s" unit="end-to-end" />
-          <Stat label="spatial query" value="≤3s" unit="round-trip" />
-          <Stat label="rendered at" value="60fps" unit="any device" />
+          <Stat label="reconstruction" value="~250s" unit="for 90s video" />
+          <Stat label="spatial query" value="~5s" unit="round-trip" />
           <Stat label="deployments" value="cloud" unit="or on-prem" />
         </div>
       </div>

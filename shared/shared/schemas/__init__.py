@@ -9,7 +9,6 @@ from .manifest import (
 )
 from .annotations import Annotation, AnnotationsFile
 from .capture import CaptureYaml, CameraModel
-from .wireframe import Range, WireframeIndex
 
 __all__ = [
     "Manifest",
@@ -23,6 +22,4 @@ __all__ = [
     "AnnotationsFile",
     "CaptureYaml",
     "CameraModel",
-    "Range",
-    "WireframeIndex",
 ]

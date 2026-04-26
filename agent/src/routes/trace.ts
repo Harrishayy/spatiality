@@ -41,14 +41,18 @@ function round6(n: number): number {
 }
 
 // Per-scene span-row cache. Both endpoints (`/api/trace/:scene_id` and
-// `/api/trace/:scene_id/cost`) derive from the same Logfire query; share the
-// cache so a UI that polls cost separately doesn't double the read load.
+// `/api/trace/:scene_id/cost`) derive from the same Logfire query; the
+// cache exists so when the trace drawer's 10s poll and the cost badge's
+// 5s poll happen to land near-simultaneously they don't double-read
+// Logfire. TTL must stay strictly below the trace poll interval so live
+// updates aren't served stale — 5s is just enough to dedupe overlapping
+// /trace + /cost ticks and nothing more.
 interface CacheEntry {
   at: number;
   rows: SpanRow[];
 }
 const spanCache = new Map<string, CacheEntry>();
-const TRACE_TTL_MS = 30_000;
+const TRACE_TTL_MS = 5_000;
 
 const SNAPSHOT_KEY = (sceneId: string) => `scenes/${sceneId}/trace.json`;
 
@@ -56,6 +60,12 @@ const SNAPSHOT_KEY = (sceneId: string) => `scenes/${sceneId}/trace.json`;
 // taking; debounce concurrent writes so the first finished snapshot wins and
 // we don't hammer R2 from parallel pollers.
 const inflightSnapshot = new Set<string>();
+// Throttle: at the trace drawer's 2s poll cadence we'd otherwise PUT a
+// snapshot every tick of an in-flight pipeline. The snapshot only needs to
+// stay fresh enough for the post-Logfire-retention fallback — a 30s lag is
+// invisible to that use case.
+const lastSnapshotAt = new Map<string, number>();
+const SNAPSHOT_MIN_INTERVAL_MS = 30_000;
 
 async function readSnapshot(sceneId: string): Promise<SpanRow[] | null> {
   try {
@@ -68,7 +78,10 @@ async function readSnapshot(sceneId: string): Promise<SpanRow[] | null> {
 
 function writeSnapshot(sceneId: string, rows: SpanRow[], log: FastifyBaseLogger): void {
   if (inflightSnapshot.has(sceneId)) return;
+  const last = lastSnapshotAt.get(sceneId) ?? 0;
+  if (Date.now() - last < SNAPSHOT_MIN_INTERVAL_MS) return;
   inflightSnapshot.add(sceneId);
+  lastSnapshotAt.set(sceneId, Date.now());
   void putArtifactJson(SNAPSHOT_KEY(sceneId), { rows, snapshot_at: new Date().toISOString() })
     .catch((err) => log.warn({ err, sceneId }, "trace snapshot write failed"))
     .finally(() => inflightSnapshot.delete(sceneId));

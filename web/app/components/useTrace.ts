@@ -1,4 +1,4 @@
-// Polls /api/trace/:scene_id for the live span tree. Polls every 2s while
+// Polls /api/trace/:scene_id for the live span tree. Polls every 10s while
 // the manifest is processing (so the drawer streams new spans into view as
 // the pipeline runs); falls back to a one-shot fetch + 30s manual refresh
 // once the scene reaches a terminal state.
@@ -16,7 +16,7 @@ interface State {
   error: string | null;
 }
 
-const POLL_PROCESSING_MS = 2_000;
+const POLL_PROCESSING_MS = 10_000;
 const POLL_TERMINAL_MS = 30_000;
 
 export function useTrace(sceneId: string, manifestStatus: ManifestStatus | null) {

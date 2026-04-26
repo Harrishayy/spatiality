@@ -54,18 +54,31 @@ export async function spansForScene(sceneId: string): Promise<SpanRow[]> {
   // sceneId is route-validated against /^[A-Za-z0-9_-]{1,64}$/, so the
   // single-quote escape below is belt-and-braces.
   const safe = sceneId.replace(/'/g, "''");
+  // Fan out by trace_id, not by attribute. Only the top-level wrapper spans
+  // (modal.process_video, segmentation.lift.project, agent.chat, …) tag
+  // scene_id explicitly — OTel attributes don't auto-propagate to children,
+  // so filtering on `attributes->>'scene_id'` would drop every gen_ai.* span
+  // from `instrument_anthropic()`, every modal.subprocess, and every nested
+  // segmentation.lift.* sub-stage. The subselect collects the trace_ids that
+  // touch this scene; the outer SELECT returns every span under those
+  // traces, so the waterfall shows the full hierarchy.
   const sql = `SELECT span_id, parent_span_id, trace_id, span_name, start_timestamp, end_timestamp,
        EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) * 1000 AS duration_ms,
        EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) AS duration,
        attributes, level
 FROM records
-WHERE attributes->>'scene_id' = '${safe}'
-ORDER BY start_timestamp ASC
-LIMIT 2000`;
+WHERE trace_id IN (
+  SELECT DISTINCT trace_id FROM records WHERE attributes->>'scene_id' = '${safe}'
+)
+ORDER BY start_timestamp ASC`;
 
   // Logfire's /v1/query is GET-only and returns column-major JSON
-  // (`{ columns: [{ name, values: [...] }, ...] }`).
-  const url = `${LOGFIRE_READ_URL}?sql=${encodeURIComponent(sql)}`;
+  // (`{ columns: [{ name, values: [...] }, ...] }`). The endpoint caps the
+  // response at 100 rows by default; `LIMIT N` inside the SQL is *ignored*.
+  // Pass `?limit=` as a URL parameter to lift the cap — without this we'd
+  // truncate any pipeline busier than ~3 stages and the trace drawer would
+  // appear to show only the "top" spans (silently).
+  const url = `${LOGFIRE_READ_URL}?limit=5000&sql=${encodeURIComponent(sql)}`;
   const res = await fetch(url, {
     headers: { authorization: `Bearer ${LOGFIRE_READ_TOKEN}` },
   });

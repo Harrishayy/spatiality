@@ -31,11 +31,6 @@ SPAN_MODAL_RUN_INFERENCE = "modal.run_inference"
 SPAN_MODAL_RUN_SEGMENTATION = "modal.run_segmentation"
 SPAN_MODAL_PREPARE_SCENE = "modal.prepare_scene"
 
-# Wireframe build (segmentation post-step). Produces wireframe.ply +
-# wireframe_index.json for the viewer's Wireframe view mode.
-SPAN_WIREFRAME_BUILD = "wireframe.build"
-
-
 _PAYLOAD_LIMIT = 16_000  # bytes; OTLP attribute limit is generous but bounded.
 
 

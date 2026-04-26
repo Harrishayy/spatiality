@@ -20,6 +20,8 @@ lib64/
 
 # Virtual environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

@@ -18,7 +18,7 @@ Render does not have GPUs sufficient for splat training, so inference must live 
 ```yaml
 services:
   - type: web
-    name: glasses-twin-agent
+    name: spatiality-agent
     runtime: node
     plan: starter   # $7/mo so the service doesn't sleep mid-demo
     buildCommand: pnpm install && pnpm --filter agent build
@@ -43,7 +43,7 @@ services:
       sizeGB: 10
 
   - type: web
-    name: glasses-twin-web
+    name: spatiality-web
     runtime: static
     buildCommand: pnpm install && pnpm --filter web build
     staticPublishPath: ./web/dist

@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: glasses-twin-agent
+    name: spatiality-agent
     runtime: node
     plan: starter   # $7/mo so the service doesn't sleep mid-demo
-    buildCommand: pnpm install && pnpm --filter agent build
-    startCommand: pnpm --filter agent start
+    buildCommand: pnpm install && pnpm --filter ./agent build
+    startCommand: pnpm --filter ./agent start
     rootDir: .
     envVars:
       - key: NODE_VERSION
@@ -54,11 +54,11 @@ services:
       sizeGB: 10
 
   - type: web
-    name: glasses-twin-web
+    name: spatiality-web
     runtime: node
     plan: starter
-    buildCommand: pnpm install && pnpm --filter web build
-    startCommand: pnpm --filter web start
+    buildCommand: pnpm install && pnpm --filter ./web build
+    startCommand: pnpm --filter ./web start
     rootDir: .
     pullRequestPreviewsEnabled: true
     envVars:

@@ -30,6 +30,7 @@ Two demo pillars:
 | 7 | agent | **Devin** | manifest.json + chat | tool-use responses |
 | 8 | observability | Harrish | All model calls | Logfire dashboard, spend caps |
 | 9 | deployment | Harrish | render.yaml, modal app | live URLs |
+| 11 | cad-export | Harrish + Claude | splat.ply + cameras.json + annotations.json + frames | cad/scene.3mf, cad/objects/*, qc.json (per-object watertight meshes for Fusion/SolidWorks) |
 
 ## Critical path (the chain that gates the demo)
 ```

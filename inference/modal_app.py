@@ -1059,4 +1059,251 @@ def smoke(scene_id: str = "modal_smoke") -> None:
     # NOTE: this assumes you've already uploaded frames into the volume:
     #   modal volume put glasses-twin-artifacts ./local_scene scenes/<scene_id>
     print("inference:", run_inference.remote({"scene_id": scene_id}))
+
+
+# ─── CAD export (module 11) ────────────────────────────────────────────────
+# Spec: 11_cad_export.md. This block is purely additive — it does not modify
+# the existing `image`, `COMMON_ENV`, or any inference/segmentation endpoints
+# above. The cad_export Image is *derived* from `image` so the CUDA + torch +
+# repo-package layers are shared (Modal layer-cache); only TRELLIS.2 +
+# Open3D + trimesh + cad_export pkg add net new layers. If the TRELLIS
+# install ever fails, only run_cad_export breaks; run_inference stays healthy.
+#
+# License: TRELLIS.2 is MIT (model + code). Confirmed against the model card
+# at huggingface.co/microsoft/TRELLIS.2-4B and github.com/microsoft/TRELLIS.2.
+# NKSR is intentionally not installed here — its CUDA-kernel build is brittle
+# on CUDA 12.4 (per spec §"Failure paths") and cad_export.fallback already
+# falls back cleanly to Open3D screened Poisson when NKSR is missing.
+
+image_cad = (
+    image
+    .pip_install(
+        "open3d>=0.18",
+        "trimesh>=4.4",
+        "lxml>=5",       # required by trimesh's 3MF writer
+        "networkx>=3",   # required by trimesh's scene graph + 3MF writer
+    )
+    # TRELLIS.2 — image-to-3D model. No PyPI release as of 2026-04 — install
+    # from source. The repo bundles its own setup.py / pyproject so editable
+    # install picks up trellis2.pipelines.Trellis2ImageTo3DPipeline.
+    # TODO(verify): if microsoft publishes a wheel, swap to plain pip_install.
+    .run_commands(
+        "git clone --depth 1 https://github.com/microsoft/TRELLIS.2.git /opt/trellis2",
+        "pip install --no-build-isolation -e /opt/trellis2",
+    )
+    # cad_export package itself.
+    .add_local_dir("./cad_export", remote_path="/repo/cad_export", copy=True)
+    .run_commands("pip install --no-deps -e /repo/cad_export")
+)
+
+
+COMMON_ENV_CAD = {
+    **COMMON_ENV,
+    # TRELLIS.2 weights live on glasses-twin-weights at trellis2/. Uploaded
+    # once via: modal volume put glasses-twin-weights ./trellis2 trellis2
+    "TRELLIS_WEIGHTS_DIR": "/weights/trellis2",
+    # HuggingFace cache → same volume so re-runs don't re-download.
+    "HF_HOME": "/weights/trellis2/.hf",
+    # Force Poisson fallback by default — NKSR is not installed in image_cad.
+    # cad_export.fallback already handles missing NKSR cleanly, but pinning
+    # this avoids the auto-mode probe-and-fallback round-trip per object.
+    "CAD_FALLBACK": "poisson",
+    # Spec §"Knobs" — per-object knobs use these env defaults; per-request
+    # overrides via run_cad_export payload come in at E7.
+    "CAD_VIEW_K": "4",
+    "CAD_VIEW_MIN_ANGLE_DEG": "30",
+    "CAD_VIEW_MIN_VISIBLE_FRAC": "0.30",
+    "CAD_REGISTER_RMSE_FRAC": "0.08",
+    "CAD_ACCEPT_BBOX_IOU": "0.30",
+    "CAD_MAX_FACES": "150000",
+    "CAD_TRELLIS_SEED": "42",
+}
+
+
+@app.function(
+    image=image_cad,
+    gpu="H100",
+    timeout=3600,
+    volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
+    secrets=[LOGFIRE_SECRET],
+    cpu=4.0,
+    memory=16384,
+)
+def cad_export_object(payload: dict) -> dict:
+    """Per-object work unit for cad_export. E3 scope: TRELLIS generation only.
+
+    payload: {
+      "scene_id": str,
+      "obj_id":   str,
+      "view_dir": str   # absolute path to a directory of K RGBA crops
+    }
+
+    Reads K=4 RGBA crops from `view_dir`, runs TRELLIS.2-4B's run_multi_image,
+    writes raw.glb to /tmp/cad_export/<obj_id>/raw.glb, returns a result dict.
+
+    E7 will extend this function to also do view selection (E2 SAM step) and
+    registration (E4) on the same H100 invocation, so each per-object .map()
+    call is one round-trip. For now this is the TRELLIS-only step — wire it
+    via .map(return_exceptions=True) from a separate orchestrator.
+    """
+    import os
+    from pathlib import Path
+
+    from shared.observability import configure_logfire  # type: ignore
+
+    from cad_export.generate import generate_mesh  # type: ignore
+
+    configure_logfire("modal-cad-export")
+    os.environ.update(COMMON_ENV_CAD)
+
+    scene_id = payload["scene_id"]
+    obj_id = payload["obj_id"]
+    view_dir = Path(payload["view_dir"])
+    out_path = Path(f"/tmp/cad_export/{obj_id}/raw.glb")
+
+    result = generate_mesh(
+        obj_id=obj_id,
+        view_dir=view_dir,
+        out_path=out_path,
+        scene_id=scene_id,
+    )
+    return {
+        "obj_id": result.obj_id,
+        "glb_path": str(result.glb_path),
+        "vertex_count": result.vertex_count,
+        "face_count": result.face_count,
+        "latency_ms": result.latency_ms,
+        "success": result.success,
+        "failure_reason": result.failure_reason,
+    }
     print("segmentation:", run_segmentation.remote({"scene_id": scene_id, "keyframes": 5}))
+
+
+@app.function(
+    image=image_cad,
+    gpu="H100",                       # used for the SAM mask runner once wired;
+                                      # the Open3D Poisson fallback runs on CPU
+                                      # but a GPU container is fine.
+    timeout=3600,
+    volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
+    secrets=[LOGFIRE_SECRET, R2_SECRET],
+    cpu=8.0,
+    memory=32768,
+)
+@modal.fastapi_endpoint(method="POST", label="run-cad-export")
+def run_cad_export(payload: dict) -> dict:
+    """End-to-end cad_export for one scene.
+
+    Reads `splat.ply` + `cameras.json` + `annotations.json` + `frames/*.png`
+    from `/artifacts/scenes/<scene_id>/`, fans out per-object TRELLIS via
+    `cad_export_object.map(return_exceptions=True)` for parallel H100
+    generation, registers / falls-back per object, and writes the
+    `cad/` subtree (objects/, scene.3mf, positions.json, qc.json).
+
+    POST body:
+      {"scene_id": "...", "object_filter": ["obj_001", ...] | null,
+       "fallback": "auto" | "nksr" | "poisson" | "none" | null}
+
+    Returns: {scene_id, accepted_count, rejected_count, skipped_no_fallback,
+              triggered_by, scene_3mf_path, qc_json_path, total_face_count}.
+    """
+    import os
+    from pathlib import Path
+
+    import logfire
+    from shared.observability import (  # type: ignore
+        SPAN_MODAL_RUN_CAD_EXPORT,
+        configure_logfire,
+    )
+
+    from cad_export.orchestrator import orchestrate  # type: ignore
+    from cad_export.runners import (  # type: ignore
+        FlatMaskRunner,
+        GenerateInput,
+        GenerateOutput,
+    )
+
+    configure_logfire("modal-cad-export")
+    os.environ.update(COMMON_ENV_CAD)
+
+    scene_id = payload["scene_id"]
+    object_filter = payload.get("object_filter")
+    fallback_mode = payload.get("fallback")  # None → env default
+
+    class ModalGenerateRunner:
+        """Per-scene generate runner: fans out cad_export_object via .map().
+
+        Each input gets one Modal call. Failures (or inputs with no view
+        directory — i.e. E2 produced no eligible cameras) are reported as
+        `success=False` so the orchestrator routes them through fallback.
+        """
+
+        def run_batch(self, scene_id_inner, inputs):
+            inputs = list(inputs)
+            payloads_with_idx = [
+                (i, {"scene_id": scene_id_inner, "obj_id": g.obj_id, "view_dir": str(g.view_dir)})
+                for i, g in enumerate(inputs)
+                if g.view_dir is not None
+            ]
+            results: list[GenerateOutput] = [
+                GenerateOutput(
+                    obj_id=g.obj_id, glb_path=None, success=False,
+                    failure_reason="no_chosen_views",
+                )
+                for g in inputs
+            ]
+            if not payloads_with_idx:
+                return results
+            indices = [i for i, _ in payloads_with_idx]
+            payloads = [p for _, p in payloads_with_idx]
+            for idx, raw in zip(indices, cad_export_object.map(payloads, return_exceptions=True)):
+                obj_id = inputs[idx].obj_id
+                if isinstance(raw, Exception):
+                    results[idx] = GenerateOutput(
+                        obj_id=obj_id, glb_path=None, success=False,
+                        failure_reason=f"modal_exception:{type(raw).__name__}:{raw}",
+                    )
+                    continue
+                results[idx] = GenerateOutput(
+                    obj_id=obj_id,
+                    glb_path=Path(raw["glb_path"]) if raw.get("glb_path") else None,
+                    success=bool(raw.get("success", False)),
+                    failure_reason=raw.get("failure_reason"),
+                    vertex_count=int(raw.get("vertex_count", 0)),
+                    face_count=int(raw.get("face_count", 0)),
+                    latency_ms=float(raw.get("latency_ms", 0.0)),
+                )
+            return results
+
+    artifacts_volume.reload()
+    scene_root = Path(f"/artifacts/scenes/{scene_id}")
+
+    with logfire.span(
+        SPAN_MODAL_RUN_CAD_EXPORT,
+        scene_id=scene_id,
+        object_filter=object_filter,
+    ) as span:
+        result = orchestrate(
+            scene_id=scene_id,
+            scene_root=scene_root,
+            object_filter=object_filter,
+            fallback_mode=fallback_mode,
+            mask_runner=FlatMaskRunner(),  # TODO(swap): Sam3Runner when box-prompt API is wired
+            generate_runner=ModalGenerateRunner(),
+        )
+        artifacts_volume.commit()
+
+        span.set_attribute("accepted_count", result.assemble.accepted_count)
+        span.set_attribute("rejected_count", result.assemble.rejected_count)
+        span.set_attribute("skipped_no_fallback", len(result.skipped_no_fallback))
+
+        return {
+            "scene_id": scene_id,
+            "accepted_count": result.assemble.accepted_count,
+            "rejected_count": result.assemble.rejected_count,
+            "skipped_no_fallback": result.skipped_no_fallback,
+            "triggered_by": result.triggered_by,
+            "scene_3mf_path": str(result.assemble.scene_3mf_path),
+            "qc_json_path": str(result.assemble.qc_json_path),
+            "total_face_count": result.assemble.total_face_count,
+        }

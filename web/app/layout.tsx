@@ -20,9 +20,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Spatiality — Glasses → 3D Twin",
+  title: "Spatiality — fast inference for 3D meshes",
   description:
-    "Capture with Ray-Ban glasses. Reconstruct in seconds. Ask the room where you are.",
+    "Turn any short video pass into a measurable, queryable 3D mesh. Reconstruct in seconds. Ask the room where you are.",
 };
 
 export const viewport: Viewport = {

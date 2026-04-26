@@ -1544,6 +1544,22 @@ button { font: inherit; }
   align-items: center;
   gap: 12px;
   min-width: 0;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 8px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background 140ms ease;
+}
+.lp-app-brand:hover {
+  background: rgba(255,179,71,0.06);
+}
+.lp-app-brand:hover .lp-app-brand-title {
+  color: var(--accent-300);
+}
+.lp-app-brand:focus-visible {
+  outline: 1px solid rgba(255,179,71,0.6);
+  outline-offset: 2px;
 }
 .lp-app-brand-mark {
   width: 22px; height: 22px;
@@ -1594,6 +1610,39 @@ button { font: inherit; }
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.lp-app-header-center {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.lp-app-scene-name {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 16px;
+  letter-spacing: -0.012em;
+  color: var(--ink-100);
+  width: clamp(180px, 28vw, 320px);
+  text-align: center;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.lp-app-scene-name::placeholder {
+  color: var(--ink-500);
+  font-style: italic;
+}
+.lp-app-scene-name:hover {
+  border-color: var(--ink-800);
+}
+.lp-app-scene-name:focus {
+  outline: none;
+  border-color: rgba(255,179,71,0.5);
+  background: rgba(17,9,14,0.55);
 }
 
 /* Status pill modifiers (extend .lp-status-pill which already has --ok) */
@@ -2334,26 +2383,18 @@ button { font: inherit; }
     radial-gradient(ellipse at 80% 80%, rgba(255,93,143,0.14), transparent 60%),
     var(--ink-900);
 }
-.lp-demo-card-thumb img {
+.lp-demo-pattern {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  transition: transform 240ms ease;
+  display: block;
+  transition: transform 320ms ease, opacity 240ms ease;
+  opacity: 0.85;
 }
-.lp-demo-card:hover .lp-demo-card-thumb img { transform: scale(1.04); }
-.lp-demo-card-thumb-fallback {
-  position: absolute;
-  inset: 0;
-  background:
-    repeating-linear-gradient(
-      45deg,
-      rgba(255,157,111,0.06),
-      rgba(255,157,111,0.06) 8px,
-      transparent 8px,
-      transparent 16px
-    );
+.lp-demo-card:hover .lp-demo-pattern {
+  transform: scale(1.05);
+  opacity: 1;
 }
 .lp-demo-card-status {
   position: absolute;

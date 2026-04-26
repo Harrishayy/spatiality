@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 
 import { LandingHeader } from "@/components/landing/Header";
 import { LandingFooter } from "@/components/landing/Footer";
-import { fetchScenes, getArtifactUrl, type SceneSummary } from "@/lib/api";
+import { DemoPattern } from "@/components/DemoPattern";
+import { fetchScenes, type SceneSummary } from "@/lib/api";
 
 type LoadState =
   | { kind: "loading" }
@@ -41,9 +42,9 @@ export default function DemosPage() {
               <span className="lp-serif lp-serif-accent">a real reconstruction.</span>
             </h1>
             <p className="lp-demos-page-sub">
-              Every scene below was captured from a Ray-Ban Meta walkthrough
-              and reconstructed end-to-end. Pick one to explore — point cloud,
-              segmentation, chat, the works.
+              Every scene below was captured from a single walkthrough and
+              reconstructed end-to-end — same pipeline, any camera. Pick one to
+              explore — point cloud, segmentation, chat, the works.
             </p>
           </header>
 
@@ -98,22 +99,13 @@ function DemosBody({ state }: { state: LoadState }) {
 }
 
 function DemoCard({ scene }: { scene: SceneSummary }) {
-  const thumb = scene.thumbnail
-    ? getArtifactUrl(scene.scene_id, scene.thumbnail)
-    : null;
-
   return (
     <Link
       href={`/scenes/${encodeURIComponent(scene.scene_id)}`}
       className="lp-demo-card"
     >
       <div className="lp-demo-card-thumb">
-        {thumb ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={thumb} alt="" loading="lazy" />
-        ) : (
-          <div className="lp-demo-card-thumb-fallback" aria-hidden="true" />
-        )}
+        <DemoPattern seed={scene.scene_id} />
         {scene.status && (
           <span
             className={[

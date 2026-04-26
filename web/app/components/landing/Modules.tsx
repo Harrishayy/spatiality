@@ -13,7 +13,7 @@ const INDUSTRIES: Industry[] = [
     name: "Robotics",
     pitch: "Geometry-grounded environments at the speed of iteration.",
     detail:
-      "Capture with a phone, GoPro, or smart glasses; export a metric, mesh-ready 3D file straight into Isaac Sim, Gazebo, Unity, or Unreal the same morning. No rigs, no scan stations.",
+      "Capture with any camera you already have; export a metric, mesh-ready 3D file straight into Isaac Sim, Gazebo, Unity, or Unreal the same morning. No rigs, no scan stations.",
   },
   {
     id: "02",

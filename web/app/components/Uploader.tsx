@@ -41,18 +41,14 @@ export function Uploader({ state, onPick, onReset }: Props) {
         handleFiles(e.dataTransfer.files);
       }}
       onClick={() => inputRef.current?.click()}
-      className={`flex min-h-[260px] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-6 text-center transition ${
-        dragOver
-          ? "border-accent-400 bg-accent-500/10"
-          : "border-ink-700 bg-ink-900/40 hover:border-ink-500 hover:bg-ink-900/70"
-      }`}
+      className={`lp-dropzone ${dragOver ? "lp-dropzone--over" : ""}`}
     >
-      <div className="size-12 rounded-full bg-gradient-to-br from-accent-500 to-accent-300 pin-glow" />
-      <div className="flex flex-col gap-1">
-        <span className="text-sm font-semibold">Drop a video to start</span>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-          mp4 / mov / webm · up to 2 GB
-        </span>
+      <span className="lp-dropzone-mark" aria-hidden>
+        ↑
+      </span>
+      <div className="flex flex-col items-center gap-1.5">
+        <span className="lp-dropzone-title">Drop a video to start</span>
+        <span className="lp-dropzone-sub">MP4, MOV or WebM — up to 2 GB</span>
       </div>
       <input
         ref={inputRef}
@@ -75,13 +71,15 @@ function ActiveUpload({
   const { file, progress, status, error, durationS } = state;
   const pct = Math.round(progress * 100);
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-ink-800 bg-ink-900/60 p-4">
+    <div className="lp-surface" style={{ gap: 16 }}>
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-semibold">{file?.name ?? "—"}</span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate text-[15px] font-semibold text-ink-100">
+            {file?.name ?? "—"}
+          </span>
+          <span className="lp-field-help">
             {file ? `${(file.size / 1_000_000).toFixed(1)} MB` : ""}
-            {durationS ? ` · ${durationS.toFixed(1)}s` : ""}
+            {durationS ? ` · ${durationS.toFixed(1)} s` : ""}
             {status === "uploading" ? ` · ${pct}%` : ""}
             {status === "done" ? " · uploaded" : ""}
             {status === "error" ? " · failed" : ""}
@@ -90,22 +88,24 @@ function ActiveUpload({
         <button
           type="button"
           onClick={onReset}
-          className="rounded-md border border-ink-700 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink-400 hover:text-ink-100"
+          className="lp-btn lp-btn-ghost lp-btn-sm"
         >
-          {status === "uploading" ? "cancel" : "remove"}
+          {status === "uploading" ? "Cancel" : "Remove"}
         </button>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-ink-800">
+      <div className="h-1.5 overflow-hidden rounded-full bg-[rgba(255,235,220,0.06)]">
         <div
           className={`h-full transition-all ${
-            status === "error" ? "bg-red-500" : status === "done" ? "bg-emerald-400" : "bg-accent-400"
+            status === "error"
+              ? "bg-accent-500"
+              : status === "done"
+                ? "bg-emerald"
+                : "bg-accent-400"
           }`}
           style={{ width: `${Math.max(pct, status === "uploading" ? 4 : 0)}%` }}
         />
       </div>
-      {error && (
-        <span className="font-mono text-[11px] text-red-300">{error}</span>
-      )}
+      {error && <span className="lp-field-help text-[#ffb6a3]">{error}</span>}
     </div>
   );
 }

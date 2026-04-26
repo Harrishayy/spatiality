@@ -1865,7 +1865,8 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
 
           // Build minimap from the now-complete cloud.
           if (positions && colors && pointsParsed > 0) {
-            const M = Math.min(8000, pointsParsed);
+            const 
+            M = Math.min(8000, pointsParsed);
             const mstride = Math.max(1, Math.floor(pointsParsed / M));
             const xz = new Float32Array(Math.ceil(pointsParsed / mstride) * 2);
             const rgb = new Float32Array(Math.ceil(pointsParsed / mstride) * 3);

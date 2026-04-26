@@ -19,9 +19,9 @@ export function LandingHero() {
         </h1>
 
         <p className="lp-hero-sub">
-          Capture with Ray-Ban Meta glasses. Reconstruct your view in seconds.
+          Any camera in, measurable 3D mesh out — in seconds, not hours.
           <br />
-          Production-grade 3D twins for robotics, AR, VR, and frontline response —
+          Production-grade meshes for robotics, AR, VR, and frontline response —
           on demand, at the speed of decisions.
         </p>
 

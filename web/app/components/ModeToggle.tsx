@@ -18,14 +18,9 @@ export function ModeToggle() {
     >
       <span
         className="inline-block size-1.5 rounded-full"
-        style={{
-          background: isLocal ? "var(--hue-amber)" : "var(--emerald)",
-          boxShadow: isLocal
-            ? "0 0 6px rgba(255,179,71,0.6)"
-            : "0 0 6px rgba(78,201,176,0.6)",
-        }}
+        style={{ background: isLocal ? "var(--hue-amber)" : "var(--emerald)" }}
       />
-      mode: {isLocal ? "local" : "r2"}
+      Mode · {isLocal ? "Local" : "R2"}
     </button>
   );
 }

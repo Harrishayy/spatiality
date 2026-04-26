@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import type { Manifest } from "@/lib/types";
 
 interface Props {
@@ -8,21 +10,67 @@ interface Props {
 
 export function Header({ manifest }: Props) {
   const status = manifest?.status ?? "queued";
-  const sceneId = manifest?.scene_id ?? "no scene";
+  const sceneId = manifest?.scene_id;
   return (
     <header className="lp-app-header">
-      <div className="lp-app-brand">
+      <Link href="/" className="lp-app-brand" aria-label="Spatiality — home">
         <span className="lp-app-brand-mark" />
         <div className="lp-app-brand-meta">
-          <span className="lp-app-brand-title">Glasses → 3D Twin</span>
-          <span className="lp-app-brand-id">{sceneId}</span>
+          <span className="lp-app-brand-title">Spatiality</span>
+          <span className="lp-app-brand-id">fast 3D mesh inference</span>
         </div>
+      </Link>
+      <div className="lp-app-header-center">
+        {sceneId && <SceneNameField sceneId={sceneId} />}
       </div>
-      <div />
       <div className="lp-app-header-meta">
         <StatusBadge status={status} />
       </div>
     </header>
+  );
+}
+
+function SceneNameField({ sceneId }: { sceneId: string }) {
+  // TODO(swap): persist via /agent PATCH onto manifest.json instead of localStorage.
+  const storageKey = `spatiality.sceneName.${sceneId}`;
+  const [name, setName] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    const stored =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem(storageKey)
+        : null;
+    setName(stored ?? "");
+    setHydrated(true);
+  }, [storageKey]);
+
+  function commit(next: string) {
+    const trimmed = next.trim().slice(0, 64);
+    setName(trimmed);
+    if (typeof window === "undefined") return;
+    if (trimmed) window.localStorage.setItem(storageKey, trimmed);
+    else window.localStorage.removeItem(storageKey);
+  }
+
+  if (!hydrated) return null;
+
+  return (
+    <input
+      className="lp-app-scene-name"
+      value={name}
+      onChange={(e) => setName(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === "Escape") {
+          (e.currentTarget as HTMLInputElement).blur();
+        }
+      }}
+      placeholder="Untitled scene"
+      spellCheck={false}
+      maxLength={64}
+      aria-label="Scene name"
+    />
   );
 }
 

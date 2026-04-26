@@ -30,15 +30,16 @@ export function SettingsPanel({ value, onChange, durationS }: Props) {
     : null;
 
   return (
-    <div className="flex flex-col gap-4 rounded-xl border border-ink-800 bg-ink-900/60 p-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold tracking-tight">Pipeline settings</h2>
+    <section className="lp-surface">
+      <header className="lp-surface-head">
+        <div>
+          <h2 className="lp-surface-title">Pipeline settings</h2>
+          <p className="lp-surface-sub">Tune capture and segmentation before queueing the job.</p>
+        </div>
         {projectedFrames != null && (
-          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-            ≈ {projectedFrames} frames
-          </span>
+          <span className="lp-eyebrow-mono">≈ {projectedFrames} frames</span>
         )}
-      </div>
+      </header>
 
       <Slider
         label="Frames per second"
@@ -67,18 +68,17 @@ export function SettingsPanel({ value, onChange, durationS }: Props) {
         onChange={(v) => set("target_long_side", v)}
       />
 
-      <Field label="Run segmentation after splat">
+      <Field
+        label="Run segmentation after splat"
+        help="SAM 3.1 + a VLM label every detected object."
+      >
         <button
           type="button"
           onClick={() => set("segment", !value.segment)}
-          className={`flex w-full items-center justify-between rounded-md border px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider transition ${
-            value.segment
-              ? "border-accent-400/60 bg-accent-500/15 text-accent-200"
-              : "border-ink-700 bg-ink-900 text-ink-400"
-          }`}
+          className={`lp-segmented-row ${value.segment ? "lp-segmented-row--on" : ""}`}
         >
-          <span>{value.segment ? "enabled" : "disabled"}</span>
-          <span>{value.segment ? "✓" : "—"}</span>
+          <span>{value.segment ? "Enabled" : "Disabled"}</span>
+          <span className="lp-segmented-meta">{value.segment ? "on" : "off"}</span>
         </button>
       </Field>
 
@@ -94,8 +94,11 @@ export function SettingsPanel({ value, onChange, durationS }: Props) {
       )}
 
       {value.segment && (
-        <Field label="VLM (routed through Pydantic AI Gateway)">
-          <div className="flex flex-col gap-1">
+        <Field
+          label="Labeler"
+          help="Routed through Pydantic AI Gateway. Cost is per scene."
+        >
+          <div className="lp-segmented">
             {VLM_MODEL_OPTIONS.map((opt) => {
               const active = (value.vlm_model ?? "claude-haiku-4-5") === opt.id;
               return (
@@ -103,32 +106,37 @@ export function SettingsPanel({ value, onChange, durationS }: Props) {
                   key={opt.id}
                   type="button"
                   onClick={() => set("vlm_model", opt.id as VlmModelId)}
-                  className={`flex items-center justify-between rounded-md border px-3 py-1.5 font-mono text-[11px] transition ${
-                    active
-                      ? "border-accent-400/60 bg-accent-500/15 text-accent-200"
-                      : "border-ink-700 bg-ink-900 text-ink-400 hover:border-ink-600"
-                  }`}
+                  className={`lp-segmented-row ${active ? "lp-segmented-row--on" : ""}`}
                 >
-                  <span className="uppercase tracking-wider">{opt.label}</span>
-                  <span className="text-[10px] text-ink-500">{opt.cost}</span>
+                  <span>{opt.label}</span>
+                  <span className="lp-segmented-meta">{opt.cost}</span>
                 </button>
               );
             })}
           </div>
         </Field>
       )}
-    </div>
+    </section>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  help,
+  children,
+}: {
+  label: string;
+  help?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-        {label}
-      </span>
+    <div className="lp-field">
+      <div className="lp-field-row">
+        <span className="lp-field-label">{label}</span>
+      </div>
+      {help && <span className="lp-field-help">{help}</span>}
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -151,12 +159,10 @@ function Slider({
 }) {
   const id = useId();
   return (
-    <label htmlFor={id} className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-          {label}
-        </span>
-        <span className="font-mono text-[11px] tabular-nums text-ink-200">
+    <label htmlFor={id} className="lp-field">
+      <div className="lp-field-row">
+        <span className="lp-field-label">{label}</span>
+        <span className="lp-field-value">
           {value}
           {suffix ? ` ${suffix}` : ""}
         </span>
@@ -169,7 +175,7 @@ function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="accent-accent-400"
+        className="lp-range"
       />
     </label>
   );

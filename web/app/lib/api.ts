@@ -52,7 +52,10 @@ export function getArtifactUrl(sceneId: string, artifact: string): string {
   if (useR2) {
     return `${r2Base}/scenes/${sceneId}/${artifact}`;
   }
-  return `/m/get-artifact?scene_id=${encodeURIComponent(sceneId)}&path=${encodeURIComponent(artifact)}`;
+  // Modal's get-artifact endpoint signature is `(scene_id, file)` — the
+  // earlier `?path=` form returns HTTP 422 ("Field required: file") and
+  // breaks every Modal-fallback fetch (annotations, frames, masks, …).
+  return `/m/get-artifact?scene_id=${encodeURIComponent(sceneId)}&file=${encodeURIComponent(artifact)}`;
 }
 
 async function unwrap<T>(res: Response, label: string): Promise<T> {
@@ -110,7 +113,8 @@ export async function fetchAnnotations(sceneId: string): Promise<Annotation[]> {
 export async function fetchPointsUrl(sceneId: string): Promise<string> {
   // The viewer parser is hard-coded for points.ply (xyz + uchar rgb +
   // optional confidence). splat.ply uses INRIA's f_dc_* SH coefficients and
-  // is consumed by segmentation/cad_export only — never by the web viewer.
+  // is consumed by the segmentation lift / mask projection only — never by
+  // the web viewer.
   return getArtifactUrl(sceneId, "points.ply");
 }
 

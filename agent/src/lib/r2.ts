@@ -41,6 +41,18 @@ export async function presignPut(
   return getSignedUrl(client, cmd, { expiresIn: expiresInSeconds });
 }
 
+export async function putArtifactJson(key: string, value: unknown): Promise<void> {
+  if (!client || !R2_ARTIFACTS_BUCKET) return;
+  await client.send(
+    new PutObjectCommand({
+      Bucket: R2_ARTIFACTS_BUCKET,
+      Key: key,
+      Body: JSON.stringify(value),
+      ContentType: "application/json",
+    }),
+  );
+}
+
 export async function getArtifactJson<T>(key: string): Promise<T | null> {
   if (!client || !R2_ARTIFACTS_BUCKET) return null;
   try {

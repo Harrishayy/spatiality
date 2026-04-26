@@ -49,7 +49,7 @@ type SpanRow = readonly [string, LogLevel, string, string];
 
 const SPAN_LOG: SpanRow[] = [
   ["00.00", "info", "agent.boot", "scene_id=living_room_03"],
-  ["00.02", "info", "capture.start", "src=ray-ban-gen2.mp4 size=84.2MB"],
+  ["00.02", "info", "capture.start", "src=capture.mp4 size=84.2MB"],
   ["00.18", "info", "capture.frames", "extracted=240 fps=30"],
   ["04.10", "ok", "capture.done", "duration=4.1s"],
   ["04.11", "info", "infer.poses.start", "model=vggt-1b dtype=fp16"],

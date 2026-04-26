@@ -53,14 +53,22 @@ export default function UploadPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-6">
-      <header className="flex items-center justify-between">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-12 px-6 py-10 md:px-10 md:py-14">
+      <header className="flex flex-wrap items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-3">
-          <div className="size-7 rounded-md bg-gradient-to-br from-accent-500 to-accent-300 pin-glow" />
+          <div
+            className="size-7 rounded-lg"
+            style={{
+              background:
+                "linear-gradient(135deg, var(--accent-500) 0%, var(--accent-300) 100%)",
+            }}
+          />
           <div className="flex flex-col leading-tight">
-            <span className="text-base font-semibold tracking-tight">Glasses → 3D Twin</span>
-            <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-              upload a video, get a splat
+            <span className="text-[15.5px] font-semibold tracking-tight text-ink-100">
+              Spatiality
+            </span>
+            <span className="text-[12.5px] text-ink-500">
+              Fast inference for 3D meshes — any camera in, measurable scene out.
             </span>
           </div>
         </Link>
@@ -68,20 +76,28 @@ export default function UploadPage() {
           {HAS_AGENT ? (
             <ModeToggle />
           ) : (
-            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-amber-300">
-              demo mode (no agent)
+            <span className="rounded-full border border-[rgba(255,179,71,0.35)] bg-[rgba(255,179,71,0.08)] px-3 py-1 text-[12px] text-amber-300">
+              Demo mode — no agent connected
             </span>
           )}
-          <a
-            href={`/scenes/${DEMO_SCENE_ID}`}
-            className="rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-ink-300 hover:border-ink-500 hover:text-ink-100"
-          >
-            view demo →
+          <a href={`/scenes/${DEMO_SCENE_ID}`} className="lp-btn lp-btn-ghost lp-btn-sm">
+            View demo
+            <span className="lp-btn-arrow">→</span>
           </a>
         </div>
       </header>
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+      <section className="flex flex-col gap-3">
+        <h1 className="text-[clamp(28px,3.4vw,40px)] font-light leading-[1.05] tracking-[-0.022em] text-ink-100">
+          Drop a clip. Get a 3D twin you can measure and ask questions of.
+        </h1>
+        <p className="max-w-xl text-[15px] leading-relaxed text-ink-400">
+          One short pass from any camera is enough. We&rsquo;ll reconstruct the
+          mesh, label the objects, and hand you a viewer plus a chat agent.
+        </p>
+      </section>
+
+      <div className="grid grid-cols-1 gap-8 md:grid-cols-[1.05fr_0.95fr]">
         <div className="flex flex-col gap-4">
           <Uploader
             state={state}
@@ -89,14 +105,15 @@ export default function UploadPage() {
             onReset={reset}
           />
           {!HAS_AGENT && (
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 font-mono text-[11px] leading-relaxed text-amber-200/90">
-              Set <code>NEXT_PUBLIC_AGENT_URL</code> to enable real uploads. Until then,
-              this page is read-only and the demo scene above is what you can explore.
+            <p className="rounded-xl border border-[rgba(255,179,71,0.25)] bg-[rgba(255,179,71,0.05)] px-4 py-3 text-[13px] leading-relaxed text-amber-200/90">
+              Set <code className="font-mono text-[12.5px]">NEXT_PUBLIC_AGENT_URL</code> to
+              enable real uploads. Until then, this page is read-only and the demo scene
+              above is what you can explore.
             </p>
           )}
         </div>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           <SettingsPanel
             value={settings}
             onChange={setSettings}
@@ -106,22 +123,18 @@ export default function UploadPage() {
             type="button"
             onClick={onStart}
             disabled={!canSubmit || !HAS_AGENT}
-            className={`rounded-xl px-4 py-3 text-sm font-semibold tracking-tight transition ${
-              canSubmit && HAS_AGENT
-                ? "bg-accent-500 text-ink-950 hover:bg-accent-400"
-                : "cursor-not-allowed bg-ink-800 text-ink-500"
-            }`}
+            className="lp-cta"
           >
             {submitting
               ? "Queueing…"
               : state.status === "uploading"
                 ? `Uploading ${(state.progress * 100).toFixed(0)}%`
                 : state.status === "done"
-                  ? `Start pipeline → ${mode === "local" ? "Modal Volume" : "R2"}`
+                  ? `Start pipeline · ${mode === "local" ? "Modal" : "R2"}`
                   : "Pick a video first"}
           </button>
           {submitError && (
-            <span className="font-mono text-[11px] text-red-300">{submitError}</span>
+            <span className="text-[12.5px] text-[#ffb6a3]">{submitError}</span>
           )}
         </div>
       </div>

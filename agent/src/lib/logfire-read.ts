@@ -55,25 +55,27 @@ WHERE attributes->>'scene_id' = '${safe}'
 ORDER BY start_timestamp ASC
 LIMIT 2000`;
 
-  const res = await fetch(LOGFIRE_READ_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${LOGFIRE_READ_TOKEN}`,
-    },
-    body: JSON.stringify({ sql }),
+  // Logfire's /v1/query is GET-only and returns column-major JSON
+  // (`{ columns: [{ name, values: [...] }, ...] }`).
+  const url = `${LOGFIRE_READ_URL}?sql=${encodeURIComponent(sql)}`;
+  const res = await fetch(url, {
+    headers: { authorization: `Bearer ${LOGFIRE_READ_TOKEN}` },
   });
   if (!res.ok) {
     throw new LogfireReadError(`logfire read ${res.status}`, res.status, await res.text());
   }
-  const data = (await res.json()) as { columns?: string[]; rows?: unknown[][] };
+  const data = (await res.json()) as {
+    columns?: Array<{ name: string; values: unknown[] }>;
+  };
   const cols = data.columns ?? [];
-  const rows = data.rows ?? [];
-  return rows.map((r) => {
+  const rowCount = cols[0]?.values.length ?? 0;
+  const out: SpanRow[] = [];
+  for (let i = 0; i < rowCount; i++) {
     const obj: Record<string, unknown> = {};
-    cols.forEach((c, i) => (obj[c] = r[i]));
-    return obj as unknown as SpanRow;
-  });
+    for (const c of cols) obj[c.name] = c.values[i];
+    out.push(obj as unknown as SpanRow);
+  }
+  return out;
 }
 
 export function toTree(rows: SpanRow[]): SpanNode[] {

@@ -2,6 +2,7 @@
 
 import type { Annotation, Manifest, StageStatus } from "@/lib/types";
 import { useUI } from "@/store/ui";
+import { AnnotationEvidencePanel } from "./AnnotationEvidencePanel";
 import { ChatPanel } from "./ChatPanel";
 import { PipelineProgress } from "./PipelineProgress";
 
@@ -24,41 +25,59 @@ export function SidePanel({
 }: Props) {
   const isolatedIds = useUI((s) => s.isolatedIds);
   const clearIsolated = useUI((s) => s.clearIsolated);
+  const selectedId = useUI((s) => s.selectedId);
+  const selected =
+    selectedId == null ? null : annotations.find((a) => a.id === selectedId) ?? null;
 
   return (
-    <aside
-      className={[
-        "flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden",
-        "border-l border-ink-800 bg-ink-900/60 p-4 backdrop-blur",
-        "md:max-w-sm",
-      ].join(" ")}
-    >
-      <PipelineProgress manifest={manifest} />
+    <aside className="lp-side md:max-w-sm">
+      <section className="lp-side-section">
+        <PipelineProgress manifest={manifest} />
+      </section>
 
-      <ObjectsList annotations={annotations} segStatus={segStatus} />
+      <section className="lp-side-section">
+        <div className="lp-side-section-head">
+          <span className="lp-side-section-title">
+            <span className="lp-eyebrow">Objects</span>
+            <span className="lp-side-section-accent">scene</span>
+          </span>
+          <span className="lp-side-section-id">{annotations.length}</span>
+        </div>
+        <ObjectsList annotations={annotations} segStatus={segStatus} />
+      </section>
+
+      {selected && (
+        <section className="lp-side-section">
+          <AnnotationEvidencePanel
+            sceneId={manifest.scene_id}
+            annotation={selected}
+          />
+        </section>
+      )}
 
       {isolatedIds.size > 0 && (
         <button
           onClick={clearIsolated}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-1 text-xs text-ink-300 hover:border-accent-400/60 hover:text-accent-300"
+          className="lp-btn lp-btn-ghost lp-btn-sm self-start"
         >
           ↺ Clear isolation ({isolatedIds.size})
         </button>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <h3 className="mb-2 text-xs uppercase tracking-wider text-ink-400">
-          Chat
-        </h3>
-        <div className="flex min-h-0 flex-1 flex-col">
-          <ChatPanel
-            sceneId={manifest.scene_id}
-            messages={messages}
-            onSend={onSend}
-            disabled={loading}
-          />
+      <section className="lp-side-section lp-side-section--grow">
+        <div className="lp-side-section-head">
+          <span className="lp-side-section-title">
+            <span className="lp-eyebrow">Chat</span>
+            <span className="lp-side-section-accent">ask</span>
+          </span>
         </div>
-      </div>
+        <ChatPanel
+          sceneId={manifest.scene_id}
+          messages={messages}
+          onSend={onSend}
+          disabled={loading}
+        />
+      </section>
     </aside>
   );
 }
@@ -82,63 +101,63 @@ function ObjectsList({
     else if (segStatus === "failed") label = "Segmentation failed.";
     else label = "No objects found.";
     return (
-      <div className="flex items-center gap-2 text-xs italic text-ink-500">
+      <div className="lp-objects-empty">
         {segStatus === "running" && (
-          <span className="size-2 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-400" />
+          <span className="lp-status-dot lp-status-dot--warn" />
         )}
         <span>{label}</span>
       </div>
     );
   }
   return (
-    <div className="space-y-1">
-      <h3 className="text-xs uppercase tracking-wider text-ink-400">
-        Objects ({annotations.length})
-      </h3>
-      <ul className="scroll-thin max-h-48 space-y-1 overflow-y-auto pr-1">
-        {annotations.map((a) => {
-          const selected = selectedId === a.id;
-          const isolated = isolatedIds.has(a.id);
-          return (
-            <li
-              key={a.id}
+    <div className="lp-objects-list">
+      {annotations.map((a) => {
+        const selected = selectedId === a.id;
+        const isolated = isolatedIds.has(a.id);
+        return (
+          <div
+            key={a.id}
+            className={[
+              "lp-objects-row",
+              selected ? "lp-objects-row--selected" : "",
+              isolated ? "lp-objects-row--isolated" : "",
+            ].join(" ")}
+            onClick={() => setSelected(selected ? null : a.id)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setSelected(selected ? null : a.id);
+              }
+            }}
+          >
+            <span
+              className="lp-objects-dot"
+              style={{ backgroundColor: a.color }}
+            />
+            <span className="lp-objects-label">{a.label}</span>
+            <span className="lp-objects-conf">
+              {(a.confidence * 100).toFixed(0)}%
+            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleIsolated(a.id);
+              }}
+              title={isolated ? "Show all" : "Isolate"}
               className={[
-                "group flex items-center gap-2 rounded-md border px-2 py-1.5",
-                selected
-                  ? "border-accent-400/80 bg-accent-500/10"
-                  : "border-ink-800 bg-ink-900/40 hover:border-ink-700",
-                isolated ? "ring-1 ring-accent-300/50" : "",
+                "lp-objects-iso",
+                isolated ? "lp-objects-iso--on" : "",
               ].join(" ")}
+              aria-label={isolated ? "Show all" : "Isolate"}
             >
-              <button
-                onClick={() => setSelected(selected ? null : a.id)}
-                className="flex flex-1 items-center gap-2 text-left"
-              >
-                <span
-                  className="block size-2.5 rounded-full"
-                  style={{ backgroundColor: a.color }}
-                />
-                <span className="text-sm">{a.label}</span>
-                <span className="ml-auto font-mono text-[10px] tabular-nums text-ink-500">
-                  {(a.confidence * 100).toFixed(0)}%
-                </span>
-              </button>
-              <button
-                onClick={() => toggleIsolated(a.id)}
-                title={isolated ? "Show all" : "Isolate"}
-                className={[
-                  "rounded px-1.5 py-0.5 text-[10px] transition",
-                  isolated
-                    ? "bg-accent-500/30 text-accent-200"
-                    : "text-ink-500 opacity-0 group-hover:opacity-100 hover:text-accent-300",
-                ].join(" ")}
-              >
-                ◉
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+              ◉
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

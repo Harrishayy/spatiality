@@ -26,17 +26,18 @@ const STAGE_TITLE: Record<DrillStage, string> = {
 const LOGFIRE_PROJECT_URL = process.env.NEXT_PUBLIC_LOGFIRE_PROJECT_URL ?? "";
 
 // Build a deep-link to the Logfire dashboard for a given scene/trace/span.
-// Logfire's UI accepts `?q=...` as the SQL filter — we craft the same shape
-// so the canonical view matches what's in the drawer.
+// Logfire's UI wraps `?q=...` as a subquery (effectively
+// `SELECT * FROM records WHERE span_id IN (<q>)`), so the inner SELECT must
+// return exactly one column — `SELECT *` triggers a "Too many columns" error.
 function logfireSceneUrl(sceneId: string): string | null {
   if (!LOGFIRE_PROJECT_URL) return null;
-  const sql = `SELECT * FROM records WHERE attributes->>'scene_id' = '${sceneId.replace(/'/g, "''")}' ORDER BY start_timestamp DESC`;
+  const sql = `SELECT span_id FROM records WHERE attributes->>'scene_id' = '${sceneId.replace(/'/g, "''")}'`;
   return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(sql)}`;
 }
 
 function logfireSpanUrl(traceId: string): string | null {
   if (!LOGFIRE_PROJECT_URL) return null;
-  return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(`SELECT * FROM records WHERE trace_id = '${traceId}'`)}`;
+  return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(`SELECT span_id FROM records WHERE trace_id = '${traceId.replace(/'/g, "''")}'`)}`;
 }
 
 // Which span name prefixes belong to which drill stage. The lookup is fuzzy

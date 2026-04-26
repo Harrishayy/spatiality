@@ -34,6 +34,7 @@ const BODY = String.raw`
       <a class="ds-side-link" href="#log"><span class="ds-side-link-id">12</span>Log panel</a>
       <a class="ds-side-link" href="#chat"><span class="ds-side-link-id">13</span>Chat bubbles</a>
       <a class="ds-side-link" href="#pins"><span class="ds-side-link-id">14</span>Annotation pins</a>
+      <a class="ds-side-link" href="#app-surface"><span class="ds-side-link-id">14a</span>App surface</a>
     </div>
     <div class="ds-side-group">
       <div class="ds-side-group-label">Patterns</div>
@@ -323,6 +324,75 @@ const BODY = String.raw`
           <div class="lp-pin" style="position:absolute;left:65%;top:50%"><span class="lp-pin-core"></span><span class="lp-pin-halo"></span><span class="lp-pin-label"><span class="lp-mono">coffee table</span><span class="lp-mono lp-muted">· conf 0.91</span></span></div>
         </div>
         <div class="ds-example-foot"><strong>&lt;AnnotationPin annotation={a} /&gt;</strong><span>.lp-pin · halo loop 2.2s</span></div>
+      </div>
+    </section>
+
+    <!-- 14a APP SURFACE -->
+    <section id="app-surface" class="ds-section">
+      <div class="ds-section-head"><span class="ds-section-id">14a</span><h2 class="ds-section-title">App surface (in-viewer)</h2></div>
+      <p class="ds-section-sub">Primitives shared by the in-app viewer at <code>/scenes/[id]</code>: app header, side panel, refined chat shell, banners, anno pills, where-am-I.</p>
+
+      <div class="ds-example">
+        <div class="ds-example-canvas" style="padding:0;background:#1a0e14;">
+          <header class="lp-app-header">
+            <div class="lp-app-brand">
+              <span class="lp-app-brand-mark"></span>
+              <div class="lp-app-brand-meta">
+                <span class="lp-app-brand-title">Glasses → 3D Twin</span>
+                <span class="lp-app-brand-id">dec5d8d886e6e</span>
+              </div>
+            </div>
+            <div></div>
+            <div class="lp-app-header-meta">
+              <span class="lp-status-pill lp-status-pill--ok"><span class="lp-status-dot lp-status-dot--ok"></span>gateway:eu · key:set · 184ms</span>
+              <span class="lp-status-pill lp-status-pill--warn"><span class="lp-status-dot lp-status-dot--warn"></span>running</span>
+            </div>
+          </header>
+        </div>
+        <div class="ds-example-foot"><strong>.lp-app-header</strong><span>distinct from .lp-header (marketing)</span></div>
+      </div>
+
+      <div class="ds-example">
+        <div class="ds-example-canvas" style="padding:18px;background:#1a0e14;">
+          <div class="lp-banner lp-banner--ok" style="margin-right:8px;"><span class="lp-banner-dot"></span><div class="lp-banner-body"><span class="lp-banner-title">Manifest synced</span></div></div>
+          <div class="lp-banner lp-banner--warn" style="margin-right:8px;"><span class="lp-banner-dot"></span><div class="lp-banner-body"><span>Segmentation in progress…</span></div></div>
+          <div class="lp-banner lp-banner--err"><span class="lp-banner-dot"></span><div class="lp-banner-body"><span class="lp-banner-title">Segmentation failed</span><span class="lp-banner-detail">VLM gateway 504 · retry queued</span></div></div>
+        </div>
+        <div class="ds-example-foot"><strong>.lp-banner --ok / --warn / --err</strong><span>floating chrome over canvas</span></div>
+      </div>
+
+      <div class="ds-example">
+        <div class="ds-example-canvas" style="padding:18px;background:#1a0e14;display:flex;flex-direction:column;gap:6px;">
+          <div class="lp-objects-row"><span class="lp-objects-dot" style="background:#ff9d6f"></span><span class="lp-objects-label">beige curtain</span><span class="lp-objects-conf">86%</span><span class="lp-objects-iso">◉</span></div>
+          <div class="lp-objects-row lp-objects-row--selected"><span class="lp-objects-dot" style="background:#8b5fa8"></span><span class="lp-objects-label">black office chair</span><span class="lp-objects-conf">92%</span><span class="lp-objects-iso lp-objects-iso--on">◉</span></div>
+          <div class="lp-objects-row lp-objects-row--isolated"><span class="lp-objects-dot" style="background:#ffb347"></span><span class="lp-objects-label">white vertical trim molding</span><span class="lp-objects-conf">71%</span><span class="lp-objects-iso lp-objects-iso--on">◉</span></div>
+        </div>
+        <div class="ds-example-foot"><strong>.lp-objects-row</strong><span>--selected / --isolated modifiers</span></div>
+      </div>
+
+      <div class="ds-example">
+        <div class="ds-example-canvas" style="padding:18px;background:#1a0e14;">
+          <div class="lp-chat-shell" style="height:240px;">
+            <div class="lp-chat-feed">
+              <div class="lp-bubble lp-bubble--user">where's the closest plug?</div>
+              <div class="lp-bubble lp-bubble--agent"><div class="lp-bubble-text"><span class="lp-bubble-serif">Behind you.</span>The black multi-outlet is mounted on the wall just past the office chair, about 1.4m from the camera.</div><div class="lp-bubble-meta">looked at 2 frames</div></div>
+            </div>
+            <div class="lp-chat-input--shell">
+              <input class="lp-chat-input--field" placeholder="Ask about the scene…" />
+              <button class="lp-chat-input--send"><span class="lp-chat-input--send-glyph">↵</span><span>Send</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="ds-example-foot"><strong>.lp-chat-shell + .lp-bubble--agent::before + .lp-bubble-serif</strong><span>composed surface</span></div>
+      </div>
+
+      <div class="ds-example">
+        <div class="ds-example-canvas" style="background:#1a0e14;height:140px;position:relative;">
+          <div style="position:absolute;left:30%;top:40%;"><button class="lp-anno-pill"><span class="lp-anno-pill-dot" style="background:#ff9d6f"></span><span class="lp-anno-pill-id">#001</span><span>beige curtain</span><span class="lp-anno-pill-conf">86%</span></button></div>
+          <div style="position:absolute;left:30%;top:75%;"><button class="lp-anno-pill lp-anno-pill--selected"><span class="lp-anno-pill-dot" style="background:#8b5fa8"></span><span class="lp-anno-pill-id">#003</span><span>black office chair</span><span class="lp-anno-pill-conf">92%</span></button></div>
+          <div style="position:absolute;left:62%;top:55%;"><button class="lp-where-btn"><span class="lp-where"><span class="lp-where-pulse"></span></span><span>Where am I?</span></button></div>
+        </div>
+        <div class="ds-example-foot"><strong>.lp-anno-pill / .lp-where-btn</strong><span>3D-anchored billboards + locate CTA</span></div>
       </div>
     </section>
 

@@ -46,9 +46,7 @@ export function AnnotationOverlay({
           const y = (-tmp.y * 0.5 + 0.5) * rect.height;
           const visible = tmp.z > -1 && tmp.z < 1 && x > -40 && x < rect.width + 40 && y > -40 && y < rect.height + 40;
           el.style.transform = `translate(-50%, -100%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
-          el.style.opacity = visible ? "1" : "0";
           el.style.pointerEvents = visible ? "auto" : "none";
-          // Distance fade
           const cz = (cam as THREE.PerspectiveCamera).position;
           const dist = Math.hypot(
             a.centroid[0] - cz.x,
@@ -68,7 +66,7 @@ export function AnnotationOverlay({
   return (
     <>
       {annotations.map((a) => {
-        const isolated = isolatedIds.size > 0 && !isolatedIds.has(a.id);
+        const dim = isolatedIds.size > 0 && !isolatedIds.has(a.id);
         const selected = selectedId === a.id;
         return (
           <div
@@ -76,37 +74,28 @@ export function AnnotationOverlay({
             ref={(el) => {
               pinsRef.current[a.id] = el;
             }}
-            className={[
-              "absolute left-0 top-0 select-none",
-              "transition-opacity duration-200",
-              isolated ? "opacity-30" : "",
-            ].join(" ")}
+            className="absolute left-0 top-0 select-none transition-opacity duration-200"
             style={{ willChange: "transform, opacity" }}
           >
             <button
               onClick={() => setSelected(selected ? null : a.id)}
               onDoubleClick={() => toggleIsolated(a.id)}
               className={[
-                "group relative flex items-center gap-2 rounded-full",
-                "border px-3 py-1 backdrop-blur-md",
-                "shadow-lg transition-transform active:scale-95",
-                selected
-                  ? "border-accent-400 bg-accent-500/30 text-white pin-glow scale-105"
-                  : "border-ink-600/80 bg-ink-900/80 text-ink-100 hover:border-accent-400/60 hover:bg-ink-800/80",
+                "lp-anno-pill",
+                selected ? "lp-anno-pill--selected" : "",
+                dim ? "lp-anno-pill--dim" : "",
               ].join(" ")}
               aria-label={`Annotation: ${a.label}`}
             >
               <span
-                className="block size-2 rounded-full"
+                className="lp-anno-pill-dot"
                 style={{ backgroundColor: a.color }}
               />
-              <span className="font-mono text-[11px] uppercase tracking-wider text-ink-300">
+              <span className="lp-anno-pill-id">
                 {a.id.replace("obj_", "#")}
               </span>
-              <span className="text-sm font-medium leading-none">
-                {a.label}
-              </span>
-              <span className="font-mono text-[10px] tabular-nums text-ink-400">
+              <span>{a.label}</span>
+              <span className="lp-anno-pill-conf">
                 {(a.confidence * 100).toFixed(0)}%
               </span>
             </button>

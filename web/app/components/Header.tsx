@@ -11,20 +11,18 @@ interface Props {
 
 export function Header({ manifest }: Props) {
   const status = manifest?.status ?? "queued";
+  const sceneId = manifest?.scene_id ?? "no scene";
   return (
-    <header className="flex items-center justify-between border-b border-ink-800 bg-ink-900/80 px-4 py-2 backdrop-blur">
-      <div className="flex items-center gap-3">
-        <div className="size-6 rounded-md bg-gradient-to-br from-accent-500 to-accent-300 pin-glow" />
-        <div className="flex flex-col leading-tight">
-          <span className="text-sm font-semibold tracking-tight">
-            Glasses → 3D Twin
-          </span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-            {manifest?.scene_id ?? "no scene"}
-          </span>
+    <header className="lp-app-header">
+      <div className="lp-app-brand">
+        <span className="lp-app-brand-mark" />
+        <div className="lp-app-brand-meta">
+          <span className="lp-app-brand-title">Glasses → 3D Twin</span>
+          <span className="lp-app-brand-id">{sceneId}</span>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div />
+      <div className="lp-app-header-meta">
         <GatewayBadge />
         <StatusBadge status={status} />
       </div>
@@ -32,9 +30,6 @@ export function Header({ manifest }: Props) {
   );
 }
 
-// "Gateway: pylf_v…3a2 · 184ms" — visible proof every model call routes
-// through Pydantic AI Gateway. Polls /api/gateway/health once on mount;
-// hidden in demo mode (no agent → fetchGatewayHealth returns null).
 function GatewayBadge() {
   const [health, setHealth] = useState<GatewayHealth | null>(null);
   const [error, setError] = useState(false);
@@ -51,30 +46,33 @@ function GatewayBadge() {
       cancelled = true;
     };
   }, []);
-  if (error || (!health && !error)) return null;
-  if (!health) return null;
+  if (error || !health) return null;
   const keyTag = health.key_set ? "key:set" : "key:unset";
   return (
     <span
       title={`Pydantic AI Gateway · ${health.region} · probe ${health.probe_status ?? "n/a"} in ${health.latency_ms}ms`}
-      className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-300"
+      className="lp-status-pill lp-status-pill--ok"
     >
+      <span className="lp-status-dot lp-status-dot--ok" />
       gateway:{health.region} · {keyTag} · {health.latency_ms}ms
     </span>
   );
 }
 
 function StatusBadge({ status }: { status: Manifest["status"] }) {
-  const tone =
-    status === "ready"
-      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-      : status === "failed"
-        ? "border-red-500/40 bg-red-500/10 text-red-300"
-        : "border-accent-400/40 bg-accent-500/10 text-accent-300";
+  const { pillMod, dotMod } = (() => {
+    switch (status) {
+      case "ready":
+        return { pillMod: "lp-status-pill--ok", dotMod: "lp-status-dot--ok" };
+      case "failed":
+        return { pillMod: "lp-status-pill--err", dotMod: "lp-status-dot--err" };
+      default:
+        return { pillMod: "lp-status-pill--warn", dotMod: "lp-status-dot--warn" };
+    }
+  })();
   return (
-    <span
-      className={`rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${tone}`}
-    >
+    <span className={`lp-status-pill ${pillMod}`}>
+      <span className={`lp-status-dot ${dotMod}`} />
       {status}
     </span>
   );

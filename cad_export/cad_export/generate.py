@@ -96,27 +96,47 @@ def generate_mesh(
             ) from exc
 
         views = _load_views(view_dir)
-        # TODO(verify): confirm cache_dir kwarg + repo id against the live
-        # model card. The spec uses "microsoft/TRELLIS.2-4B".
-        pipe = Trellis2ImageTo3DPipeline.from_pretrained(
-            "microsoft/TRELLIS.2-4B", cache_dir=weights_dir,
-        )
+        # TRELLIS.2's actual API is single-image: pipe.run(image). There is no
+        # run_multi_image. The spec assumed otherwise; for now use the first
+        # view as the conditioning image. trellis2's from_pretrained always
+        # uses HF Hub (no local-dir branch); HF_HOME=/weights/trellis2/.hf
+        # caches weights on the Modal volume after first cold-start.
+        pipe = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
         pipe.cuda()
 
-        out = pipe.run_multi_image(
-            views,
+        meshes = pipe.run(
+            views[0],
+            num_samples=1,
             seed=seed,
-            formats=["mesh"],
             sparse_structure_sampler_params=dict(
                 steps=sparse_steps, cfg_strength=sparse_cfg,
             ),
-            slat_sampler_params=dict(steps=slat_steps, cfg_strength=slat_cfg),
+            shape_slat_sampler_params=dict(steps=slat_steps, cfg_strength=slat_cfg),
         )
-        mesh = out["mesh"][0]  # trimesh.Trimesh in [-0.5, 0.5]^3
+        mesh = meshes[0]  # MeshWithVoxel in [-0.5, 0.5]^3
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        mesh.export(out_path)
+        # Export as GLB using o_voxel's postprocess (PBR-aware). The simplify
+        # step keeps face count under nvdiffrast's hard limit.
+        import o_voxel  # type: ignore[import-not-found]
+        mesh.simplify(16777216)
+        glb = o_voxel.postprocess.to_glb(
+            vertices=mesh.vertices,
+            faces=mesh.faces,
+            attr_volume=mesh.attrs,
+            coords=mesh.coords,
+            attr_layout=mesh.layout,
+            voxel_size=mesh.voxel_size,
+            aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+            decimation_target=int(os.environ.get("CAD_MAX_FACES", "150000")),
+            texture_size=2048,
+            remesh=True,
+            remesh_band=1,
+            remesh_project=0,
+            verbose=False,
+        )
+        glb.export(str(out_path))
 
         vc = int(len(mesh.vertices))
         fc = int(len(mesh.faces))

@@ -26,54 +26,53 @@ export function PipelineProgress({ manifest }: { manifest: Manifest }) {
   const cloudStats = useUI((s) => s.cloudStats);
   const setOpenStage = useUI((s) => s.setOpenStage);
   return (
-    <div className="space-y-2">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-xs uppercase tracking-wider text-ink-400">
-          Pipeline
-        </h3>
-        <span className="font-mono text-[11px] text-ink-400">
-          {manifest.scene_id}
-        </span>
+    <div className="flex flex-col gap-3">
+      <div className="lp-card">
+        <div className="lp-card-head">
+          <div className="lp-card-head-l">
+            <h3 className="lp-card-title">Pipeline</h3>
+            <span className="lp-side-section-accent">live</span>
+          </div>
+          <span className="lp-side-section-id">{manifest.scene_id}</span>
+        </div>
+        <ol className="lp-stage-list">
+          {STAGE_ORDER.map((key) => {
+            const stage = manifest.stages[key];
+            return (
+              <li key={key}>
+                <button
+                  type="button"
+                  onClick={() => setOpenStage(key)}
+                  className="lp-stage-row lp-stage-row--btn"
+                  title="View live trace for this stage"
+                >
+                  <StageDot status={stage.status} />
+                  <div className="lp-stage-meta">
+                    <span className="lp-stage-label">{LABEL[key]}</span>
+                    <span className="lp-stage-trace">view trace ↗</span>
+                  </div>
+                  <DurationOrExtra stage={stage} />
+                </button>
+              </li>
+            );
+          })}
+        </ol>
       </div>
-      <ol className="overflow-hidden rounded-lg border border-ink-800 bg-ink-900/40">
-        {STAGE_ORDER.map((key, i) => (
-          <li
-            key={key}
-            className={i > 0 ? "border-t border-ink-800" : ""}
-          >
-            <button
-              type="button"
-              onClick={() => setOpenStage(key)}
-              className="group flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-ink-800/40"
-              title="View live trace for this stage"
-            >
-              <div className="flex items-center gap-3">
-                <StatusDot status={manifest.stages[key].status} />
-                <span className="text-sm text-ink-200">{LABEL[key]}</span>
-                <span className="font-mono text-[10px] text-ink-700 opacity-0 transition group-hover:opacity-100">
-                  view trace ↗
-                </span>
-              </div>
-              <DurationOrExtra stage={manifest.stages[key]} />
-            </button>
-          </li>
-        ))}
-      </ol>
       <Stats manifest={manifest} cloudStats={cloudStats} />
     </div>
   );
 }
 
-function StatusDot({ status }: { status: StageStatus }) {
-  if (status === "complete")
-    return <span className="size-2 rounded-full bg-emerald-400" />;
-  if (status === "running")
-    return (
-      <span className="size-2 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-400" />
-    );
-  if (status === "failed")
-    return <span className="size-2 rounded-full bg-red-400" />;
-  return <span className="size-2 rounded-full bg-ink-600" />;
+function StageDot({ status }: { status: StageStatus }) {
+  const mod =
+    status === "complete"
+      ? "lp-stage-dot--complete"
+      : status === "running"
+        ? "lp-stage-dot--running"
+        : status === "failed"
+          ? "lp-stage-dot--failed"
+          : "";
+  return <span className={`lp-stage-dot ${mod}`} />;
 }
 
 function DurationOrExtra({ stage }: { stage: Stage }) {
@@ -81,20 +80,13 @@ function DurationOrExtra({ stage }: { stage: Stage }) {
   if (typeof stage.duration_s === "number") {
     parts.push(`${stage.duration_s.toFixed(1)}s`);
   }
-  // The `gaussian_count` field is the count of cluster-source primitives in
-  // splat.ply (input to segmentation), NOT the count rendered in the viewer.
-  // Rendered points come from points.ply and live in the cloudStats store.
   if (typeof stage["gaussian_count"] === "number") {
     parts.push(`${formatPointCount(stage["gaussian_count"] as number)} clusters`);
   }
   if (typeof stage["object_count"] === "number") {
     parts.push(`${stage["object_count"]} obj`);
   }
-  return (
-    <span className="font-mono text-xs tabular-nums text-ink-400">
-      {parts.join(" · ") || "—"}
-    </span>
-  );
+  return <span className="lp-stage-dur">{parts.join(" · ") || "—"}</span>;
 }
 
 function Stats({
@@ -104,9 +96,6 @@ function Stats({
   manifest: Manifest;
   cloudStats: { count: number; sizeMb: number } | null;
 }) {
-  // Frame cell: VGGT consumes a frame-budgeted subset of what capture extracts.
-  // Show "used / captured" once VGGT has stamped its consumed count on the
-  // poses stage; before that, fall back to the on-disk capture count.
   const captured = manifest.stats.frame_count;
   const usedRaw = manifest.stages.poses["frame_count"];
   const used = typeof usedRaw === "number" ? usedRaw : null;
@@ -115,9 +104,6 @@ function Stats({
       ? `${used} / ${captured}`
       : `${captured}`;
 
-  // Splat cell: prefer the viewer's live cloud count; fall back to the splat
-  // stage's gaussian_count (set as soon as splat completes); only fall back
-  // to size-on-disk when neither is available yet.
   const splatGaussiansRaw = manifest.stages.splat["gaussian_count"];
   const splatGaussians =
     typeof splatGaussiansRaw === "number" ? splatGaussiansRaw : null;
@@ -135,29 +121,19 @@ function Stats({
   }
 
   return (
-    <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-ink-800 bg-ink-900/40 text-center">
+    <div className="lp-hero-stats lp-hero-stats--side">
       <Cell label="frames" value={frameValue} />
-      <Cell label="objects" value={manifest.stats.object_count} divider />
-      <Cell label={cloudLabel} value={cloudValue} divider />
+      <Cell label="objects" value={manifest.stats.object_count} />
+      <Cell label={cloudLabel} value={cloudValue} />
     </div>
   );
 }
 
-function Cell({
-  label,
-  value,
-  divider = false,
-}: {
-  label: string;
-  value: number | string;
-  divider?: boolean;
-}) {
+function Cell({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className={`px-3 py-2 ${divider ? "border-l border-ink-800" : ""}`}>
-      <div className="font-mono text-base tabular-nums">{value}</div>
-      <div className="text-[10px] uppercase tracking-wider text-ink-500">
-        {label}
-      </div>
+    <div className="lp-stat lp-stat-compact">
+      <div className="lp-stat-label">{label}</div>
+      <div className="lp-stat-value">{value}</div>
     </div>
   );
 }

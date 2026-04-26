@@ -131,6 +131,19 @@ the design.
 | `.lp-bubble--user` / `.lp-bubble--agent` | Chat bubbles                                         |
 | `.lp-pin`, `.lp-pin-core`, `.lp-pin-halo`, `.lp-pin-label` | 3D-anchored annotation pin (halo loop 2.2s) |
 | `.lp-module-card`                      | 9-module architecture grid card                        |
+| `.lp-app-header` + `.lp-app-brand` / `.lp-app-brand-mark` / `.lp-app-brand-title` / `.lp-app-brand-id` / `.lp-app-header-tools` / `.lp-app-header-meta` | In-viewer header chrome (distinct from `.lp-header`). Serif scene title + mono scene_id. |
+| `.lp-side` + `.lp-side-section` (+ `--grow`) + `.lp-side-section-head` / `.lp-side-section-title` / `.lp-side-section-accent` / `.lp-side-section-id` | Side panel shell (pipeline / objects / evidence / chat) with editorial section heads. |
+| `.lp-stage-row--btn`, `.lp-stage-dot--running` / `--failed`, `.lp-stage-trace` | Clickable variant of `.lp-stage-row` for in-app pipeline. |
+| `.lp-hero-stats--side` + `.lp-stat-compact` | Side-panel variant of the hero stats grid (3-up, snug). |
+| `.lp-objects-list` + `.lp-objects-row` (+ `--selected` / `--isolated`) + `.lp-objects-dot` / `.lp-objects-label` / `.lp-objects-conf` / `.lp-objects-iso` (+ `--on`) | Selectable annotation list rows. |
+| `.lp-chat-shell` + `.lp-chat-feed`     | Composed chat surface (list + input as one object).    |
+| `.lp-bubble-serif`, `.lp-bubble-pending`, `.lp-bubble-frames` / `.lp-bubble-frame` + agent `::before` ornament | Editorial moment + frame evidence inside `.lp-bubble--agent`. |
+| `.lp-chat-input--shell` + `.lp-chat-input--field` + `.lp-chat-input--send` (+ `--send-glyph`) | Refined chat composer + coral send pill. |
+| `.lp-banner` (+ `--ok` / `--warn` / `--err`) + `.lp-banner-dot` / `.lp-banner-body` / `.lp-banner-title` / `.lp-banner-detail` | Floating banners over the splat canvas. |
+| `.lp-anno-pill` (+ `--selected` / `--dim`) + `.lp-anno-pill-dot` / `.lp-anno-pill-id` / `.lp-anno-pill-conf` | 3D-anchored annotation billboards (mixed-case body, mono id-tag). |
+| `.lp-where-btn`                        | "Where am I?" coral pill (replaces ad-hoc shadow).     |
+| `.lp-evidence-grid` + `.lp-evidence-tile` + `.lp-evidence-tile-img` / `.lp-evidence-tile-mask` | "What the model saw" tile grid with CSS mask overlay. |
+| `.lp-status-pill--warn` / `--err` + `.lp-status-dot--warn` / `--err` / `--idle` | Extra status modifiers. |
 | `.lp-mono`, `.lp-muted`, `.lp-serif`, `.lp-serif-accent` | Inline type modifiers                |
 
 ## Voice & copy

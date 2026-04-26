@@ -501,6 +501,7 @@ def _segment_impl(
         artifacts_volume.commit()
         _mirror_manifest(scene_id)
         _mirror_artifacts(scene_id, ["annotations.json", "thumbnail.jpg"])
+        _mirror_segmentation_evidence(scene_id)
         return {"status": "ok", "scene_id": scene_id, "keyframes": keyframes}
 
 
@@ -687,6 +688,95 @@ def _mirror_manifest(scene_id: str) -> None:
 
 def _mirror_artifacts(scene_id: str, names: list[str]) -> None:
     _mirror_to_r2(scene_id, names)
+
+
+def _mirror_segmentation_evidence(scene_id: str) -> None:
+    """Mirror the per-object SAM masks AND their referenced keyframes to R2.
+
+    Bounded by the same 6-frames-per-object cap that lift_masks emits, so the
+    upload volume is ~ (n_objects × 6) frames + masks rather than the full
+    capture (which can be ~1k 2 MB PNGs). Without this, the deployed web —
+    which reads frames + masks from `NEXT_PUBLIC_R2_ARTIFACTS_PUBLIC_BASE` —
+    sees a 404 for every overlay tile in the evidence panel.
+
+    Idempotent: every PUT is keyed by deterministic path, so re-runs of
+    segmentation on the same scene re-overwrite in place.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    bucket = os.environ.get("R2_ARTIFACTS_BUCKET")
+    s3 = _r2_client()
+    if not (bucket and s3):
+        return
+
+    scene_root = Path(f"/artifacts/scenes/{scene_id}")
+    masks_root = scene_root / "masks"
+    frames_root = scene_root / "frames"
+    annotations_path = scene_root / "annotations.json"
+
+    # Frame stems we need: union of every annotation's frame_ids that has a
+    # corresponding mask file on disk. Falls back to walking masks/ if
+    # annotations.json is missing (shouldn't happen at this call site, but
+    # cheap defense).
+    frame_names: set[str] = set()
+    if annotations_path.exists():
+        try:
+            anns = json.loads(annotations_path.read_text())
+            for a in anns:
+                for fname in a.get("frame_ids", []) or []:
+                    frame_names.add(fname)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Walk masks/ and upload everything we wrote, AND collect frame stems
+    # from filenames so we still mirror keyframes when annotations.json
+    # didn't list them (e.g. legacy scenes).
+    if masks_root.is_dir():
+        for ann_dir in masks_root.iterdir():
+            if not ann_dir.is_dir():
+                continue
+            for mask_path in ann_dir.glob("*.png"):
+                key = f"scenes/{scene_id}/masks/{ann_dir.name}/{mask_path.name}"
+                try:
+                    s3.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=mask_path.read_bytes(),
+                        ContentType="image/png",
+                        CacheControl="public, max-age=31536000, immutable",
+                    )
+                except Exception as exc:
+                    print(f"r2 mirror {key} failed: {exc!r}", flush=True)
+                    continue
+                # If annotations.json didn't list this frame, find the
+                # source frame by stem (extension may be .png or .jpg).
+                if frames_root.is_dir() and not any(
+                    f.startswith(mask_path.stem + ".") for f in frame_names
+                ):
+                    for cand in frames_root.glob(mask_path.stem + ".*"):
+                        frame_names.add(cand.name)
+                        break
+
+    # Mirror only the keyframes we actually need for the evidence gallery.
+    if frames_root.is_dir():
+        for fname in frame_names:
+            src = frames_root / fname
+            if not src.exists():
+                continue
+            ext = src.suffix.lower()
+            ctype = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+            try:
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=f"scenes/{scene_id}/frames/{fname}",
+                    Body=src.read_bytes(),
+                    ContentType=ctype,
+                    CacheControl="public, max-age=31536000, immutable",
+                )
+            except Exception as exc:
+                print(f"r2 mirror frames/{fname} failed: {exc!r}", flush=True)
 
 
 # ── Patch stage helpers to mirror manifest on every transition ─────────────
@@ -1060,15 +1150,19 @@ def get_artifact(scene_id: str, file: str):
     1-2 s and avoids holding the full payload in container memory.
 
     Also allows `frames/<name>.{jpg,png}` so the pipeline drill-down UI can
-    render keyframe thumbnails with VLM bboxes overlaid. The path is
-    validated against directory-traversal: only a single `frames/`-prefixed
-    image basename, no `..`, no nested paths.
+    render keyframe thumbnails with VLM bboxes overlaid, and
+    `masks/<annotation_id>/<name>.png` so the per-object evidence gallery
+    can overlay SAM 3.1 masks on those keyframes. All path forms are
+    validated against directory-traversal: no `..`, no leading dot, and
+    each segment is a single allowed basename.
     """
+    import re
     from pathlib import Path
     from fastapi import Response
     from fastapi.responses import FileResponse
 
     is_frame = file.startswith("frames/")
+    is_mask = file.startswith("masks/")
     if is_frame:
         # frames/<basename>.<jpg|png|jpeg> only — no traversal, no nesting.
         rest = file[len("frames/") :]
@@ -1083,6 +1177,26 @@ def get_artifact(scene_id: str, file: str):
         ext = rest.rsplit(".", 1)[-1].lower() if "." in rest else ""
         if ext not in ("jpg", "jpeg", "png"):
             return Response(status_code=400, content=f"file not allowed: {file}")
+    elif is_mask:
+        # masks/<annotation_id>/<basename>.png — exactly two segments.
+        # Annotation IDs are auto-generated as `obj_NNN` (segmentation/lift_masks),
+        # so a strict alnum/underscore match keeps the surface tight.
+        rest = file[len("masks/") :]
+        parts = rest.split("/")
+        if (
+            len(parts) != 2
+            or ".." in parts
+            or any(not p or p.startswith(".") for p in parts)
+            or "\\" in rest
+        ):
+            return Response(status_code=400, content=f"file not allowed: {file}")
+        ann_id, basename = parts
+        if not re.fullmatch(r"[A-Za-z0-9_]+", ann_id):
+            return Response(status_code=400, content=f"file not allowed: {file}")
+        if not basename.lower().endswith(".png"):
+            return Response(status_code=400, content=f"file not allowed: {file}")
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", basename):
+            return Response(status_code=400, content=f"file not allowed: {file}")
     elif file not in _ALLOWED_ARTIFACTS:
         return Response(status_code=400, content=f"file not allowed: {file}")
     artifacts_volume.reload()
@@ -1092,6 +1206,9 @@ def get_artifact(scene_id: str, file: str):
     if is_frame:
         ext = p.suffix.lower()
         media = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        cache = "public, max-age=86400, immutable"
+    elif is_mask:
+        media = "image/png"
         cache = "public, max-age=86400, immutable"
     else:
         media = _ARTIFACT_CONTENT_TYPE.get(file, "application/octet-stream")
@@ -1186,6 +1303,8 @@ image_cad = (
         "pip install --no-build-isolation /tmp/CuMesh",
         "git clone https://github.com/JeffreyXiang/FlexGEMM.git --recursive /tmp/FlexGEMM",
         "pip install --no-build-isolation /tmp/FlexGEMM",
+        "git clone -b v0.4.0 https://github.com/NVlabs/nvdiffrast.git /tmp/nvdiffrast",
+        "pip install --no-build-isolation /tmp/nvdiffrast",
         "pip install --no-build-isolation /opt/trellis2/o-voxel",
     )
     .env({"PYTHONPATH": "/opt/trellis2:/repo"})

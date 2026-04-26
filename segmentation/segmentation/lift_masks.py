@@ -314,6 +314,63 @@ def _cache_save(scene_dir: Path, key: dict, clusters: list[Cluster]) -> None:
     (scene_dir / _CACHE_FILENAME).write_text(json.dumps(blob))
 
 
+# ─── mask persistence ─────────────────────────────────────────────────────
+
+
+def _write_cluster_masks(
+    scene_dir: Path,
+    mask_groups: list[tuple[str, list[Mask]]],
+    *,
+    min_area_px: int = 64,
+) -> None:
+    """Persist per-cluster SAM masks under masks/<cluster_id>/<frame_stem>.png.
+
+    Drives the web "evidence gallery" (what the model saw on each keyframe).
+    One PNG per (cluster, frame): if multiple masks in the cluster came from
+    the same frame, keeps the largest-area one — the gallery shows one
+    overlay per frame, not a per-prompt heat map.
+
+    Format: 8-bit grayscale, 0=background / 255=object. The web layer binds
+    these as CSS mask-image and tints them with annotation.color, so a
+    single-channel image is sufficient and tiny on the wire.
+    """
+    if not mask_groups:
+        return
+    masks_root = scene_dir / "masks"
+    try:
+        masks_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for cluster_id, masks in mask_groups:
+        # Best mask per frame = largest area (the SAM dedup pass already
+        # collapsed within-frame near-duplicates, so this is mostly a tie-break
+        # for the rare case where two distinct prompts in one frame both
+        # survive).
+        by_frame: dict[str, Mask] = {}
+        for m in masks:
+            if m.area < min_area_px:
+                continue
+            cur = by_frame.get(m.frame_name)
+            if cur is None or m.area > cur.area:
+                by_frame[m.frame_name] = m
+        if not by_frame:
+            continue
+        out_dir = masks_root / cluster_id
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        for frame_name, m in by_frame.items():
+            stem = Path(frame_name).stem
+            try:
+                arr = (m.segmentation.astype(np.uint8) * 255)
+                Image.fromarray(arr, mode="L").save(
+                    out_dir / f"{stem}.png", optimize=True
+                )
+            except OSError:
+                continue
+
+
 # ─── public API ───────────────────────────────────────────────────────────
 
 
@@ -509,6 +566,10 @@ def cluster_via_masks(
         ranked.sort(key=lambda t: t[0], reverse=True)
 
         clusters: list[Cluster] = []
+        # Per-cluster member masks, kept so we can persist them to disk for
+        # the evidence-gallery UI. Indexed by the same iteration order as
+        # `clusters` and `ranked`.
+        cluster_masks: list[tuple[str, list[Mask]]] = []
         dropped_min_track = 0
         dropped_max_clusters = max(0, len(ranked) - max_clusters)
         sourced_sam = sourced_vlm = sourced_both = 0
@@ -630,9 +691,10 @@ def cluster_via_masks(
             elif "vlm" in sources_set:
                 sourced_vlm += 1
 
+            cluster_id = f"obj_{cid_zero + 1:03d}"
             clusters.append(
                 Cluster(
-                    id=f"obj_{cid_zero + 1:03d}",
+                    id=cluster_id,
                     gaussian_indices=global_idx.tolist(),
                     centroid=centroid,
                     bbox_3d=(
@@ -647,6 +709,9 @@ def cluster_via_masks(
                     frame_ids=frame_ids_seen,
                 )
             )
+            cluster_masks.append(
+                (cluster_id, [filtered_masks[i] for i in g])
+            )
 
         span.set_attribute("cluster_count", len(clusters))
         span.set_attribute("dropped_by_min_track_size", dropped_min_track)
@@ -654,6 +719,22 @@ def cluster_via_masks(
         span.set_attribute("cluster_count_sam_only", sourced_sam)
         span.set_attribute("cluster_count_vlm_only", sourced_vlm)
         span.set_attribute("cluster_count_both", sourced_both)
+        # Drop masks for clusters we kept (mirrors clusters[]); skipped
+        # clusters at the tail of cluster_masks are inert. The downstream
+        # merge passes may rename or absorb cluster ids — masks under those
+        # ids stay on disk under their original ids, and the surviving
+        # annotation's id is always one of those ids (anchor.id), so the
+        # gallery's primary view is always present.
+        kept_ids = {c.id for c in clusters}
+        kept_groups = [(cid, ms) for cid, ms in cluster_masks if cid in kept_ids]
+        try:
+            _write_cluster_masks(scene_dir, kept_groups)
+        except Exception as e:  # noqa: BLE001 — telemetry-only, do not fail the lift
+            logfire.warn(
+                "mask persistence failed",
+                scene_id=sid,
+                error=str(e)[:200],
+            )
         if ck is not None:
             try:
                 _cache_save(scene_dir, ck, clusters)

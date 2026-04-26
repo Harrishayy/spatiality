@@ -30,16 +30,13 @@ export function ChatPanel({ sceneId, messages, onSend, disabled }: Props) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div
-        ref={scrollRef}
-        className="scroll-thin flex-1 space-y-3 overflow-y-auto pb-3 pr-1"
-      >
+    <div className="lp-chat-shell">
+      <div ref={scrollRef} className="lp-chat-feed">
         {messages.map((m) => (
           <Message key={m.id} m={m} sceneId={sceneId} />
         ))}
       </div>
-      <div className="flex gap-2 border-t border-ink-800 pt-3">
+      <div className="lp-chat-input--shell">
         <input
           type="text"
           inputMode="text"
@@ -48,32 +45,36 @@ export function ChatPanel({ sceneId, messages, onSend, disabled }: Props) {
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder={disabled ? "Loading…" : "Ask about the scene…"}
           disabled={disabled}
-          className={[
-            "flex-1 rounded-lg border border-ink-700 bg-ink-900 px-3 py-2",
-            "text-sm placeholder:text-ink-500 focus:border-accent-400",
-            "focus:outline-none focus:ring-1 focus:ring-accent-400",
-            "disabled:opacity-60",
-          ].join(" ")}
+          className="lp-chat-input--field"
         />
         <button
           onClick={submit}
           disabled={disabled || !draft.trim()}
-          className={[
-            "rounded-lg bg-accent-500 px-3 py-2 text-sm font-medium text-white",
-            "transition active:scale-95 hover:bg-accent-400",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          ].join(" ")}
+          className="lp-chat-input--send"
         >
-          Send
+          <span className="lp-chat-input--send-glyph">↵</span>
+          <span>Send</span>
         </button>
       </div>
     </div>
   );
 }
 
+// Some agent replies start with a short editorial preamble (e.g. "Looking…",
+// "📍 …"). We split off the first sentence as a serif italic accent so each
+// agent message has the editorial moment the design system calls for.
+function splitSerifIntro(text: string): { intro: string | null; rest: string } {
+  const trimmed = text.trim();
+  if (!trimmed) return { intro: null, rest: "" };
+  const m = trimmed.match(/^([^.!?\n]{2,40}[.!?])\s+(.+)/s);
+  if (!m) return { intro: null, rest: trimmed };
+  return { intro: m[1], rest: m[2] };
+}
+
 function Message({ m, sceneId }: { m: ChatMessage; sceneId: string }) {
   const isUser = m.role === "user";
   const frames = m.frames_used ?? [];
+  const { intro, rest } = isUser ? { intro: null, rest: m.text } : splitSerifIntro(m.text);
   return (
     <div
       className={[
@@ -83,32 +84,33 @@ function Message({ m, sceneId }: { m: ChatMessage; sceneId: string }) {
     >
       <div
         className={[
-          "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-snug",
-          isUser
-            ? "bg-accent-500/90 text-white"
-            : "bg-ink-800 text-ink-100",
-          m.pending ? "italic text-ink-400" : "",
+          "lp-bubble",
+          isUser ? "lp-bubble--user" : "lp-bubble--agent",
+          m.pending ? "lp-bubble-pending" : "",
         ].join(" ")}
       >
-        {m.text}
-      </div>
-      {!isUser && frames.length > 0 && (
-        <div className="mt-1 flex max-w-[85%] flex-col gap-1">
-          <div className="text-[10px] uppercase tracking-wider text-ink-500">
-            Looked at {frames.length} frame{frames.length === 1 ? "" : "s"}
-          </div>
-          <div className="flex gap-1 overflow-x-auto">
-            {frames.map((name) => (
-              <img
-                key={name}
-                src={frameUrl(sceneId, name)}
-                alt={name}
-                className="h-12 w-16 flex-none rounded border border-ink-700 object-cover"
-              />
-            ))}
-          </div>
+        <div className="lp-bubble-text">
+          {intro && <span className="lp-bubble-serif">{intro}</span>}
+          {rest}
         </div>
-      )}
+        {!isUser && frames.length > 0 && (
+          <>
+            <div className="lp-bubble-meta">
+              looked at {frames.length} frame{frames.length === 1 ? "" : "s"}
+            </div>
+            <div className="lp-bubble-frames">
+              {frames.map((name) => (
+                <img
+                  key={name}
+                  src={frameUrl(sceneId, name)}
+                  alt={name}
+                  className="lp-bubble-frame"
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

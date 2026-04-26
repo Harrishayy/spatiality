@@ -72,7 +72,7 @@ export default function ScenePage() {
             )}
             <button
               onClick={() => setShowSide((s) => !s)}
-              className="pointer-events-auto rounded-full border border-ink-700 bg-ink-900/80 px-3 py-2 text-xs text-ink-200 backdrop-blur md:hidden"
+              className="pointer-events-auto lp-btn lp-btn-ghost lp-btn-sm md:hidden"
             >
               {showSide ? "Hide ▸" : "Chat ◂"}
             </button>
@@ -90,14 +90,21 @@ export default function ScenePage() {
           )}
 
           {emptySplat && splatReady && (
-            <div className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-md border border-ink-700/60 bg-ink-900/70 px-3 py-2 text-xs text-ink-300 backdrop-blur">
-              <p>
-                <strong className="text-ink-100">Demo placeholder:</strong>{" "}
-                splat.ply is empty (stub scene). Annotation bboxes are rendered
-                as wireframes so you can see the spatial layout. Drop a real
-                splat at <code>/artifacts/scenes/{sceneId}/splat.ply</code> to
-                see it for real.
-              </p>
+            <div className="pointer-events-none absolute left-3 top-3">
+              <div className="lp-banner">
+                <span className="lp-banner-dot" />
+                <div className="lp-banner-body">
+                  <span className="lp-banner-title">Demo placeholder</span>
+                  <span className="text-[11px] text-ink-300">
+                    splat.ply is empty (stub scene). Annotation bboxes render
+                    as wireframes. Drop a real splat at{" "}
+                    <code className="font-mono text-ink-200">
+                      /artifacts/scenes/{sceneId}/splat.ply
+                    </code>
+                    .
+                  </span>
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -139,22 +146,17 @@ function PipelinePending({
   return (
     <div className="flex h-full w-full items-center justify-center p-6">
       <div className="flex w-full max-w-md flex-col items-stretch gap-4">
-        <div className="flex items-center gap-3 text-ink-400">
-          <div
-            className={[
-              "size-3 rounded-full",
-              failed
-                ? "bg-red-400"
-                : "animate-[pulse_900ms_ease-in-out_infinite] bg-accent-500",
-            ].join(" ")}
+        <span
+          className={`lp-status-pill ${failed ? "lp-status-pill--err" : "lp-status-pill--warn"} self-start`}
+        >
+          <span
+            className={`lp-status-dot ${failed ? "lp-status-dot--err" : "lp-status-dot--warn"}`}
           />
-          <p className="font-mono text-xs uppercase tracking-wider">
-            {failed ? "pipeline failed" : "running pipeline"}
-          </p>
-        </div>
+          {failed ? "pipeline failed" : "running pipeline"}
+        </span>
         {manifest && <PipelineProgress manifest={manifest} />}
         {failed && manifest?.errors?.length ? (
-          <pre className="max-h-32 overflow-auto rounded-md border border-red-500/40 bg-red-500/10 p-3 text-[11px] text-red-200">
+          <pre className="max-h-32 overflow-auto rounded-lg border border-accent-500/40 bg-accent-500/10 p-3 font-mono text-[11px] text-ink-200">
             {manifest.errors[manifest.errors.length - 1]}
           </pre>
         ) : (
@@ -174,10 +176,12 @@ function SegmentingBanner({ status }: { status: StageStatus }) {
       ? "Segmentation in progress — annotations will appear shortly."
       : "Annotations not yet generated. Segmentation pending.";
   return (
-    <div className="pointer-events-none absolute right-3 top-3 max-w-xs rounded-md border border-accent-500/40 bg-ink-900/80 px-3 py-2 text-xs text-ink-200 backdrop-blur">
-      <div className="flex items-center gap-2">
-        <span className="size-2 animate-[pulse_900ms_ease-in-out_infinite] rounded-full bg-accent-400" />
-        <span>{label}</span>
+    <div className="pointer-events-none absolute right-3 top-3">
+      <div className="lp-banner lp-banner--warn">
+        <span className="lp-banner-dot" />
+        <div className="lp-banner-body">
+          <span>{label}</span>
+        </div>
       </div>
     </div>
   );
@@ -191,9 +195,14 @@ function FailedBanner({
   detail?: string;
 }) {
   return (
-    <div className="pointer-events-none absolute right-3 top-3 max-w-xs rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-200 backdrop-blur">
-      <p className="font-medium">{title}</p>
-      {detail && <p className="mt-1 truncate text-[11px] opacity-80">{detail}</p>}
+    <div className="pointer-events-none absolute right-3 top-3">
+      <div className="lp-banner lp-banner--err">
+        <span className="lp-banner-dot" />
+        <div className="lp-banner-body">
+          <span className="lp-banner-title">{title}</span>
+          {detail && <span className="lp-banner-detail">{detail}</span>}
+        </div>
+      </div>
     </div>
   );
 }

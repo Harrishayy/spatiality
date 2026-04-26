@@ -223,7 +223,7 @@ wheels = [
 
 [[package]]
 name = "cad-export"
-version = "0.0.2"
+version = "0.0.4"
 source = { editable = "cad_export" }
 dependencies = [
     { name = "logfire" },

@@ -41,22 +41,13 @@ export function WhereAmIButton({ sceneId, annotations, onAnswer }: Props) {
     <button
       onClick={onClick}
       disabled={busy}
-      className={[
-        "group flex items-center gap-2 rounded-full px-4 py-2",
-        "bg-accent-500 text-white font-medium",
-        "shadow-[0_0_24px_rgba(124,92,255,0.45)]",
-        "transition active:scale-95 hover:bg-accent-400",
-        "disabled:opacity-60",
-      ].join(" ")}
+      className="lp-where-btn"
       aria-label="Where am I?"
     >
-      <span
-        className={[
-          "block size-2 rounded-full bg-white",
-          busy ? "animate-[pulse_900ms_ease-in-out_infinite]" : "",
-        ].join(" ")}
-      />
-      <span className="text-sm">{busy ? "Looking…" : "Where am I?"}</span>
+      <span className="lp-where">
+        <span className="lp-where-pulse" />
+      </span>
+      <span>{busy ? "Looking…" : "Where am I?"}</span>
     </button>
   );
 }

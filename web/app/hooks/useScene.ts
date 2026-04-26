@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchAnnotations, fetchManifest, fetchSplatUrl } from "@/lib/api";
+import { fetchAnnotations, fetchManifest, fetchPointsUrl } from "@/lib/api";
 import type { Annotation, BBox, Vec3 } from "@/lib/types";
 
 const POLL_MS = 2000;
@@ -54,7 +54,7 @@ export function useScene(sceneId: string) {
 
   const splatUrl = useQuery({
     queryKey: ["splatUrl", sceneId],
-    queryFn: () => fetchSplatUrl(sceneId),
+    queryFn: () => fetchPointsUrl(sceneId),
     enabled: splatReady,
   });
 

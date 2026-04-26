@@ -9,7 +9,7 @@ import type {
 
 export const DEMO_SCENE_ID = "demo_bedroom";
 
-function getArtifactUrl(sceneId: string, artifact: string): string {
+export function getArtifactUrl(sceneId: string, artifact: string): string {
   const r2Base = process.env.NEXT_PUBLIC_R2_ARTIFACTS_PUBLIC_BASE;
   const useR2 = r2Base && process.env.NEXT_PUBLIC_DEFAULT_MODE !== "local";
   if (useR2) {
@@ -69,12 +69,39 @@ export async function fetchAnnotations(sceneId: string): Promise<Annotation[]> {
   return unwrap(res, "fetchAnnotations");
 }
 
-export async function fetchSplatUrl(sceneId: string): Promise<string> {
-  return getArtifactUrl(sceneId, "splat.ply");
+export async function fetchPointsUrl(sceneId: string): Promise<string> {
+  // The viewer parser is hard-coded for points.ply (xyz + uchar rgb +
+  // optional confidence). splat.ply uses INRIA's f_dc_* SH coefficients and
+  // is consumed by segmentation/cad_export only — never by the web viewer.
+  return getArtifactUrl(sceneId, "points.ply");
 }
 
 export function frameUrl(sceneId: string, frameName: string): string {
   return getArtifactUrl(sceneId, `frames/${frameName}.jpg`);
+}
+
+/**
+ * Frame URL for the evidence gallery. Unlike `frameUrl`, this trusts the
+ * caller's filename verbatim — `Annotation.frame_ids` from the real
+ * segmentation pipeline already includes the file extension (e.g.
+ * `0001.png`), so we must not append another one.
+ */
+export function evidenceFrameUrl(sceneId: string, frameName: string): string {
+  return getArtifactUrl(sceneId, `frames/${frameName}`);
+}
+
+/**
+ * Mask URL for the evidence gallery. Masks are written by
+ * `segmentation.lift_masks._write_cluster_masks` as PNGs keyed by the
+ * frame stem (no extension), so `0001.png` → `masks/<id>/0001.png`.
+ */
+export function maskUrl(
+  sceneId: string,
+  annotationId: string,
+  frameName: string,
+): string {
+  const stem = frameName.replace(/\.[^./]+$/, "");
+  return getArtifactUrl(sceneId, `masks/${annotationId}/${stem}.png`);
 }
 
 export async function postLocate(params: {

@@ -123,11 +123,13 @@ async def _propose_one(
     client,
     semaphore: asyncio.Semaphore,
     frame_path: Path,
+    scene_id: str = "",
 ) -> list[Proposal]:
     async with semaphore:
         b64 = await asyncio.to_thread(_frame_to_b64, frame_path)
         with logfire.span(
             "segmentation.vlm_proposal.frame",
+            scene_id=scene_id,
             model_id=MODEL,
             frame_name=frame_path.name,
         ) as span:
@@ -224,12 +226,14 @@ def _cache_save(scene_dir: Path, key: dict, proposals: list[Proposal]) -> None:
 async def propose(
     scene_dir: Path,
     keyframe_indices: list[int],
+    scene_id: str | None = None,
 ) -> list[Proposal]:
     """Run the VLM proposer on each keyframe in parallel.
 
     Resolves frame paths via cameras.json (matches sam.run's logic). Caches the
     full result list keyed on (model, frame_names) so re-runs skip the calls.
     """
+    sid = scene_id or scene_dir.name
     cameras = json.loads((scene_dir / "cameras.json").read_text())
     frame_dir = scene_dir / "frames"
 
@@ -256,6 +260,7 @@ async def propose(
     if cached is not None:
         with logfire.span(
             "segmentation.vlm_proposal.summary",
+            scene_id=sid,
             cache="hit",
             frame_count=len(frame_paths),
             proposal_count_total=len(cached),
@@ -271,7 +276,7 @@ async def propose(
     semaphore = asyncio.Semaphore(PROPOSAL_CONCURRENCY)
     try:
         results = await asyncio.gather(
-            *(_propose_one(client, semaphore, fp) for fp in frame_paths)
+            *(_propose_one(client, semaphore, fp, sid) for fp in frame_paths)
         )
     finally:
         await client.close()
@@ -284,6 +289,7 @@ async def propose(
 
     with logfire.span(
         "segmentation.vlm_proposal.summary",
+        scene_id=sid,
         cache="miss",
         frame_count=len(frame_paths),
         proposal_count_total=len(proposals),

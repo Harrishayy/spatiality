@@ -164,7 +164,7 @@ async def _gather_sources(
     from . import sam as _sam
 
     sam_coro = (
-        asyncio.to_thread(_sam.run, scene, keyframe_indices)
+        asyncio.to_thread(_sam.run, scene, keyframe_indices, args.scene_id)
         if not args.no_sam
         else _empty_sam()
     )
@@ -173,7 +173,10 @@ async def _gather_sources(
     else:
         from . import proposer as _proposer
 
-        vlm_coro = _wrap_vlm_proposals(_proposer.propose(scene, keyframe_indices))
+        vlm_coro = _wrap_vlm_proposals(
+            _proposer.propose(scene, keyframe_indices, scene_id=args.scene_id),
+            scene_id=args.scene_id,
+        )
 
     (sam_masks, sam_backend), vlm_proposals = await asyncio.gather(sam_coro, vlm_coro)
     return sam_masks, sam_backend, vlm_proposals
@@ -187,9 +190,9 @@ async def _empty_vlm():
     return []
 
 
-async def _wrap_vlm_proposals(coro):
+async def _wrap_vlm_proposals(coro, scene_id: str = ""):
     """Logfire span around the proposer + tolerant return on failure."""
-    with logfire.span(SPAN_SEGMENTATION_VLM_PROPOSAL) as span:
+    with logfire.span(SPAN_SEGMENTATION_VLM_PROPOSAL, scene_id=scene_id) as span:
         try:
             proposals = await coro
         except Exception as e:
@@ -220,6 +223,7 @@ def _run_real(
         scene_id=args.scene_id,
         keyframe_count=len(keyframe_indices),
         mask_count=len(sam_masks),
+        vlm_proposal_count=len(vlm_proposals),
         backend=backend,
     ):
         pass  # detail spans live inside sam.run / proposer.propose
@@ -229,7 +233,7 @@ def _run_real(
 
         vlm_masks = _lift_masks.proposals_to_masks(vlm_proposals, scene)
         clusters = _lift_masks.cluster_via_masks(
-            scene, sam_masks + vlm_masks, jaccard_min=args.jaccard_min
+            scene, sam_masks + vlm_masks, jaccard_min=args.jaccard_min, scene_id=args.scene_id
         )
     else:
         from . import lift as _lift
@@ -245,7 +249,7 @@ def _run_real(
         cluster_count=len(clusters),
     ) as vlm_span:
         t0 = time.perf_counter()
-        labels = _vlm.label_clusters(scene, clusters)
+        labels = _vlm.label_clusters(scene, clusters, scene_id=args.scene_id)
         annotations = _to_annotations(clusters, labels)
         annotations.write_atomic(scene / "annotations.json")
         vlm_dur = time.perf_counter() - t0

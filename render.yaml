@@ -35,8 +35,15 @@ services:
         sync: false
       - key: PYDANTIC_GATEWAY_KEY
         sync: false
+      - key: PYDANTIC_GATEWAY_REQUIRED
+        value: "1"
       - key: LOGFIRE_TOKEN
         sync: false
+      # Logfire READ token (separate from write/ingest token) — powers /api/trace
+      - key: LOGFIRE_READ_TOKEN
+        sync: false
+      - key: LOGFIRE_READ_URL
+        value: https://logfire-eu.pydantic.dev/v1/query
       - key: MODAL_INFERENCE_URL
         sync: false
       - key: ARTIFACTS_PATH
@@ -65,3 +72,6 @@ services:
         sync: false
       - key: NEXT_PUBLIC_DEFAULT_MODE
         value: r2
+      # Browser deep-link to Logfire project (drives "Open in Logfire ↗" links in trace drawer)
+      - key: NEXT_PUBLIC_LOGFIRE_PROJECT_URL
+        sync: false

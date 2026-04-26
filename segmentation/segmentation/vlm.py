@@ -29,15 +29,14 @@ import logfire
 from anthropic import Anthropic, AsyncAnthropic
 from PIL import Image, ImageDraw, ImageFont
 
+from shared.gateway import (
+    anthropic_client as _gateway_sync_client,
+    async_anthropic_client as _gateway_async_client,
+)
 from shared.observability import attach_payload
 
 from .lift import Cluster
 
-GATEWAY_URL = os.environ.get(
-    "PYDANTIC_GATEWAY_URL", "https://gateway-eu.pydantic.dev/proxy/anthropic/"
-)
-# The same pylf_v... token doubles as Gateway auth — accept either var name.
-GATEWAY_KEY_ENVS = ("PYDANTIC_GATEWAY_KEY", "PYDANTIC_API_KEY")
 MODEL = os.environ.get("VLM_MODEL", "claude-haiku-4-5")
 BATCH_SIZE = int(os.environ.get("VLM_BATCH_SIZE", "5"))
 TILE_PX = int(os.environ.get("VLM_TILE_PX", "320"))
@@ -56,22 +55,15 @@ class Label:
     alternatives: list[str]
 
 
-def client_kwargs() -> dict:
-    """Pydantic AI Gateway connection params shared by sync + async clients."""
-    key = next((os.environ[k] for k in GATEWAY_KEY_ENVS if os.environ.get(k)), None)
-    if not key:
-        raise RuntimeError(
-            f"none of {GATEWAY_KEY_ENVS} set — cannot call Pydantic AI Gateway"
-        )
-    return {"base_url": GATEWAY_URL, "auth_token": key}
-
-
 def _client() -> Anthropic:
-    return Anthropic(**client_kwargs())
+    """Sync Anthropic client routed through Pydantic AI Gateway. Thin alias for
+    `shared.gateway.anthropic_client` kept for back-compat with proposer.py."""
+    return _gateway_sync_client()
 
 
 def _async_client() -> AsyncAnthropic:
-    return AsyncAnthropic(**client_kwargs())
+    """Async Anthropic client routed through Pydantic AI Gateway."""
+    return _gateway_async_client()
 
 
 def _load_cache(path: Path) -> dict[str, dict]:
@@ -185,7 +177,9 @@ def _parse(text: str) -> dict[str, Label]:
 
 
 def _call_batch(
-    client: Anthropic, batch: list[tuple[str, Image.Image, str]]
+    client: Anthropic,
+    batch: list[tuple[str, Image.Image, str]],
+    scene_id: str = "",
 ) -> dict[str, Label]:
     grid = _tile(batch)
     b64 = _to_b64(grid)
@@ -193,6 +187,7 @@ def _call_batch(
     hints = {cid: hint for cid, _, hint in batch}
     with logfire.span(
         "segmentation.vlm_label.batch",
+        scene_id=scene_id,
         model_id=MODEL,
         batch_size=len(batch),
         cluster_ids=cluster_ids,
@@ -261,6 +256,7 @@ def _estimate_cost(input_tokens: int, output_tokens: int) -> float:
 
 async def _label_batches_concurrent(
     batches: list[list[tuple[str, Image.Image, str]]],
+    scene_id: str = "",
 ) -> list[dict[str, Label] | BaseException]:
     """Run every batch's Anthropic call in parallel, capped by a semaphore.
 
@@ -276,12 +272,14 @@ async def _label_batches_concurrent(
 
     async def _one(batch: list[tuple[str, Image.Image, str]]):
         async with sem:
-            return await asyncio.to_thread(_call_batch, client, batch)
+            return await asyncio.to_thread(_call_batch, client, batch, scene_id)
 
     return await asyncio.gather(*(_one(b) for b in batches), return_exceptions=True)
 
 
-def label_clusters(scene_dir: Path, clusters: list[Cluster]) -> dict[str, Label]:
+def label_clusters(
+    scene_dir: Path, clusters: list[Cluster], scene_id: str | None = None
+) -> dict[str, Label]:
     """Label every cluster (using cache for idempotency). Returns id -> Label.
 
     Each tile carries a `hint` — the cluster's `proposed_phrase` from the VLM
@@ -293,6 +291,9 @@ def label_clusters(scene_dir: Path, clusters: list[Cluster]) -> dict[str, Label]
     full network round-trip latency per batch (~2-3 s × N batches). Now N
     batches go in parallel, so wall time ≈ slowest single batch.
     """
+    # Default scene_id from the scene_dir name (matches the convention used
+    # by shared.paths.scene_dir → /artifacts/scenes/<scene_id>/).
+    sid = scene_id or scene_dir.name
     cache_path = scene_dir / "vlm_cache.json"
     cache = _load_cache(cache_path)
     results: dict[str, Label] = {
@@ -312,7 +313,7 @@ def label_clusters(scene_dir: Path, clusters: list[Cluster]) -> dict[str, Label]
 
     if todo:
         batches = [todo[i : i + BATCH_SIZE] for i in range(0, len(todo), BATCH_SIZE)]
-        batch_results = asyncio.run(_label_batches_concurrent(batches))
+        batch_results = asyncio.run(_label_batches_concurrent(batches, sid))
         for batch, batch_outcome in zip(batches, batch_results):
             if isinstance(batch_outcome, Exception):
                 err = str(batch_outcome)[:64]
@@ -340,6 +341,7 @@ def label_clusters(scene_dir: Path, clusters: list[Cluster]) -> dict[str, Label]
     sourced_both = sum(1 for c in clusters if set(c.sources) == {"sam", "vlm"})
     with logfire.span(
         "segmentation.vlm_label.summary",
+        scene_id=sid,
         cluster_count=len(clusters),
         rejected_none_count=rejected_none,
         dropped_duplicate_count=dropped_dup,

@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { Header } from "@/components/Header";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { SidePanel } from "@/components/SidePanel";
+import { StageDrawer } from "@/components/StageDrawer";
 import { WhereAmIButton } from "@/components/WhereAmIButton";
 import { useChat } from "@/hooks/useChat";
 import { useScene } from "@/hooks/useScene";
@@ -120,6 +121,10 @@ export default function ScenePage() {
           )}
         </div>
       </main>
+
+      {/* Drill-down drawer — opens when a Pipeline row is clicked. Lives at
+          page level so the backdrop covers the splat viewer too. */}
+      <StageDrawer sceneId={sceneId} manifestStatus={m?.status ?? null} />
     </div>
   );
 }

@@ -187,7 +187,11 @@ def _dedup_per_frame(masks: list[Mask], iou_threshold: float) -> tuple[list[Mask
     return [m for m, k in zip(masks, keep) if k], dropped
 
 
-def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
+def run(
+    scene_dir: Path,
+    keyframes: list[int],
+    scene_id: str | None = None,
+) -> tuple[list[Mask], str]:
     """Generate masks for each keyframe; return flat mask list + backend name ('sam3').
 
     Iterates the SAM3_TEXT_PROMPTS list per keyframe so a text-grounded model
@@ -197,6 +201,7 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
     import logfire
     import torch
 
+    sid = scene_id or scene_dir.name
     cameras = json.loads((scene_dir / "cameras.json").read_text())
     frame_dir = scene_dir / "frames"
     processor = build_generator()
@@ -229,6 +234,7 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
             frame_masks: list[Mask] = []
             with logfire.span(
                 "segmentation.sam3.keyframe",
+                scene_id=sid,
                 keyframe_idx=idx,
                 frame_name=frame_path.name,
                 backend=backend,
@@ -254,6 +260,7 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
 
     with logfire.span(
         "segmentation.sam3.summary",
+        scene_id=sid,
         backend=backend,
         prompt_list=",".join(prompts),
         keyframe_count=len(keyframes),
@@ -261,6 +268,8 @@ def run(scene_dir: Path, keyframes: list[int]) -> tuple[list[Mask], str]:
         dedup_dropped=total_dedup_dropped,
     ) as span:
         for p, c in mask_count_per_prompt.items():
-            span.set_attribute(f"mask_count[{p}]", c)
+            # Logfire treats {x} in attribute names as templates; use a flat
+            # key to avoid the prompt phrase being misinterpreted.
+            span.set_attribute(f"mask_count_prompt_{p.replace(' ', '_')}", c)
 
     return masks, backend

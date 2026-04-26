@@ -24,6 +24,8 @@ import { useEffect, useRef, useState } from "react";
 // held in memory, ~600KB minified).
 import {
   AmbientLight,
+  Box3,
+  Box3Helper,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -32,23 +34,280 @@ import {
   DirectionalLight,
   EdgesGeometry,
   GridHelper,
+  Group,
+  Line,
   LineBasicMaterial,
   LineSegments,
   PerspectiveCamera,
   Points,
-  PointsMaterial,
+  Raycaster,
   Scene,
+  ShaderMaterial,
   Spherical,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
-import type { Annotation } from "@/lib/types";
+import type { Annotation, Vec3 } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { AnnotationOverlay } from "./AnnotationOverlay";
 
 // "end_header\n" — used as a needle in the streaming parser to detect when the
 // PLY ASCII header is fully received and we can transition to body parsing.
 const END_HEADER_NEEDLE = new TextEncoder().encode("end_header\n");
+
+/** Compute a rectilinear room footprint from the cloud's XZ projection.
+ *
+ *  Pipeline:
+ *   1. Bin the cloud's XZ projection into a 5cm grid → per-cell point counts.
+ *   2. **Smooth the counts** with a 3×3 box blur. This is the static-snapshot
+ *      analog of a Kalman filter: each cell's "is-occupied" belief is updated
+ *      from its neighbours' beliefs, suppressing isolated outlier counts the
+ *      same way a Kalman update suppresses spurious observations. (A literal
+ *      Kalman filter would need a temporal sequence; we have one frame.)
+ *   3. Threshold to a binary occupancy mask.
+ *   4. **Morphological closing** (dilate ×2, erode ×2) bridges hairline gaps
+ *      between nearby wall fragments so the room reads as a single enclosed
+ *      region even when inference noise breaks a wall.
+ *   5. **Flood-fill from the grid border**. Anything not reached by the flood
+ *      is interior — mark it occupied. This guarantees the ground plan has
+ *      no holes (a real floor plan is always simply-connected).
+ *   6. Walk the cell-by-cell boundary of the filled mask and emit
+ *      axis-aligned line segments — every edge is purely along X or Z.
+ *
+ *  Floor/ceiling Y come from the 5th/95th percentile of the Y histogram so
+ *  stragglers below the floor or above the ceiling don't stretch the box.
+ */
+function computeRoomFootprint(
+  positions: Float32Array,
+  pointCount: number,
+  rawBounds: { min: [number, number, number]; max: [number, number, number] },
+): {
+  bounds: { min: [number, number, number]; max: [number, number, number] };
+  floorY: number;
+  ceilingY: number;
+  /** Flat triplets [x0,y,z0, x1,y,z1, ...] describing line-segment pairs
+   *  for the floor outline (every segment is purely along X or along Z). */
+  floorOutline: Float32Array;
+  ceilingOutline: Float32Array;
+} {
+  const CELL = 0.05; // 5cm grid — fine enough to hug furniture, coarse enough to dedupe noise
+  const Y_BINS = 200;
+  const [minX, minY, minZ] = rawBounds.min;
+  const [maxX, maxY, maxZ] = rawBounds.max;
+  const gridW = Math.max(1, Math.ceil((maxX - minX) / CELL) + 1);
+  const gridD = Math.max(1, Math.ceil((maxZ - minZ) / CELL) + 1);
+  const cells = gridW * gridD;
+  const occ = new Uint32Array(cells);
+  const yHist = new Uint32Array(Y_BINS);
+  const yRange = Math.max(maxY - minY, 1e-3);
+
+  for (let i = 0; i < pointCount; i++) {
+    const x = positions[i * 3];
+    const y = positions[i * 3 + 1];
+    const z = positions[i * 3 + 2];
+    const cx = ((x - minX) / CELL) | 0;
+    const cz = ((z - minZ) / CELL) | 0;
+    if (cx >= 0 && cx < gridW && cz >= 0 && cz < gridD) {
+      occ[cz * gridW + cx]++;
+    }
+    const yb = (((y - minY) / yRange) * Y_BINS) | 0;
+    if (yb >= 0 && yb < Y_BINS) yHist[yb]++;
+  }
+
+  // Floor / ceiling = 5th / 95th percentile of Y.
+  let cum = 0;
+  let floorBin = 0;
+  let ceilingBin = Y_BINS - 1;
+  let foundFloor = false;
+  for (let i = 0; i < Y_BINS; i++) {
+    cum += yHist[i];
+    if (!foundFloor && cum >= pointCount * 0.05) {
+      floorBin = i;
+      foundFloor = true;
+    }
+    if (cum >= pointCount * 0.95) {
+      ceilingBin = i;
+      break;
+    }
+  }
+  const floorY = minY + (floorBin / Y_BINS) * yRange;
+  const ceilingY = minY + ((ceilingBin + 1) / Y_BINS) * yRange;
+
+  // Step 2 — smooth counts (3×3 box blur). Cheap proxy for a Gaussian
+  // belief refinement: each cell's confidence in occupancy borrows from
+  // its neighbours, suppressing isolated noise spikes.
+  const blur = new Float32Array(cells);
+  for (let cz = 0; cz < gridD; cz++) {
+    for (let cx = 0; cx < gridW; cx++) {
+      let s = 0;
+      let n = 0;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx < 0 || nx >= gridW || nz < 0 || nz >= gridD) continue;
+          s += occ[nz * gridW + nx];
+          n++;
+        }
+      }
+      blur[cz * gridW + cx] = n > 0 ? s / n : 0;
+    }
+  }
+
+  // Step 3 — threshold to binary. The threshold scales with average cell
+  // density so it adapts to both dense and sparse clouds.
+  const avg = pointCount / Math.max(1, cells);
+  const occThreshold = Math.max(3, Math.floor(avg * 0.2));
+  let mask: Uint8Array = new Uint8Array(cells);
+  for (let i = 0; i < cells; i++) mask[i] = blur[i] > occThreshold ? 1 : 0;
+
+  // Step 4 — morphological closing (dilate then erode). 2-cell dilate
+  // bridges gaps up to ~10cm; the matching 2-cell erode keeps the wall
+  // thickness honest. With closing, the flood-fill in step 5 reliably
+  // sees the room interior as enclosed.
+  const dilate = (src: Uint8Array): Uint8Array => {
+    const dst = new Uint8Array(cells);
+    for (let cz = 0; cz < gridD; cz++) {
+      for (let cx = 0; cx < gridW; cx++) {
+        const i = cz * gridW + cx;
+        if (
+          src[i] ||
+          (cx > 0 && src[i - 1]) ||
+          (cx < gridW - 1 && src[i + 1]) ||
+          (cz > 0 && src[i - gridW]) ||
+          (cz < gridD - 1 && src[i + gridW])
+        ) {
+          dst[i] = 1;
+        }
+      }
+    }
+    return dst;
+  };
+  const erode = (src: Uint8Array): Uint8Array => {
+    const dst = new Uint8Array(cells);
+    for (let cz = 0; cz < gridD; cz++) {
+      for (let cx = 0; cx < gridW; cx++) {
+        const i = cz * gridW + cx;
+        if (!src[i]) continue;
+        if (cx > 0 && !src[i - 1]) continue;
+        if (cx < gridW - 1 && !src[i + 1]) continue;
+        if (cz > 0 && !src[i - gridW]) continue;
+        if (cz < gridD - 1 && !src[i + gridW]) continue;
+        dst[i] = 1;
+      }
+    }
+    return dst;
+  };
+  mask = dilate(dilate(mask));
+  mask = erode(erode(mask));
+
+  // Step 5 — flood-fill from the border. Any empty cell reachable from
+  // outside the grid is "exterior". Cells that aren't exterior and aren't
+  // already in the mask are interior holes — flip them to occupied.
+  // Iterative DFS via a Uint32Array stack to avoid O(n) recursion.
+  const exterior = new Uint8Array(cells);
+  const stack = new Uint32Array(cells);
+  let top = 0;
+  const seed = (i: number) => {
+    if (!mask[i] && !exterior[i]) {
+      exterior[i] = 1;
+      stack[top++] = i;
+    }
+  };
+  for (let cx = 0; cx < gridW; cx++) {
+    seed(cx);
+    seed((gridD - 1) * gridW + cx);
+  }
+  for (let cz = 0; cz < gridD; cz++) {
+    seed(cz * gridW);
+    seed(cz * gridW + gridW - 1);
+  }
+  while (top > 0) {
+    const i = stack[--top];
+    const cx = i % gridW;
+    if (cx > 0) seed(i - 1);
+    if (cx < gridW - 1) seed(i + 1);
+    if (i >= gridW) seed(i - gridW);
+    if (i < cells - gridW) seed(i + gridW);
+  }
+  for (let i = 0; i < cells; i++) {
+    if (!exterior[i]) mask[i] = 1;
+  }
+
+  // Tight bounds from the filled mask.
+  let tightMinCx = gridW;
+  let tightMaxCx = -1;
+  let tightMinCz = gridD;
+  let tightMaxCz = -1;
+  for (let cz = 0; cz < gridD; cz++) {
+    for (let cx = 0; cx < gridW; cx++) {
+      if (mask[cz * gridW + cx]) {
+        if (cx < tightMinCx) tightMinCx = cx;
+        if (cx > tightMaxCx) tightMaxCx = cx;
+        if (cz < tightMinCz) tightMinCz = cz;
+        if (cz > tightMaxCz) tightMaxCz = cz;
+      }
+    }
+  }
+  const usable = tightMaxCx >= 0;
+  const tightMinX = usable ? minX + tightMinCx * CELL : minX;
+  const tightMaxX = usable ? minX + (tightMaxCx + 1) * CELL : maxX;
+  const tightMinZ = usable ? minZ + tightMinCz * CELL : minZ;
+  const tightMaxZ = usable ? minZ + (tightMaxCz + 1) * CELL : maxZ;
+
+  // Step 6 — extract axis-aligned boundary segments from the filled mask.
+  const isOcc = (cx: number, cz: number) =>
+    cx >= 0 && cx < gridW && cz >= 0 && cz < gridD && mask[cz * gridW + cx] === 1;
+  const segs: number[] = [];
+  for (let cz = 0; cz < gridD; cz++) {
+    for (let cx = 0; cx < gridW; cx++) {
+      if (!isOcc(cx, cz)) continue;
+      const x0 = minX + cx * CELL;
+      const x1 = x0 + CELL;
+      const z0 = minZ + cz * CELL;
+      const z1 = z0 + CELL;
+      if (!isOcc(cx, cz - 1)) segs.push(x0, z0, x1, z0);
+      if (!isOcc(cx, cz + 1)) segs.push(x0, z1, x1, z1);
+      if (!isOcc(cx - 1, cz)) segs.push(x0, z0, x0, z1);
+      if (!isOcc(cx + 1, cz)) segs.push(x1, z0, x1, z1);
+    }
+  }
+
+  const segCount = segs.length / 4;
+  const floorOutline = new Float32Array(segCount * 6);
+  const ceilingOutline = new Float32Array(segCount * 6);
+  for (let s = 0; s < segCount; s++) {
+    const e = s * 4;
+    const ax = segs[e];
+    const az = segs[e + 1];
+    const bx = segs[e + 2];
+    const bz = segs[e + 3];
+    floorOutline[s * 6 + 0] = ax;
+    floorOutline[s * 6 + 1] = floorY;
+    floorOutline[s * 6 + 2] = az;
+    floorOutline[s * 6 + 3] = bx;
+    floorOutline[s * 6 + 4] = floorY;
+    floorOutline[s * 6 + 5] = bz;
+    ceilingOutline[s * 6 + 0] = ax;
+    ceilingOutline[s * 6 + 1] = ceilingY;
+    ceilingOutline[s * 6 + 2] = az;
+    ceilingOutline[s * 6 + 3] = bx;
+    ceilingOutline[s * 6 + 4] = ceilingY;
+    ceilingOutline[s * 6 + 5] = bz;
+  }
+
+  return {
+    bounds: {
+      min: [tightMinX, floorY, tightMinZ],
+      max: [tightMaxX, ceilingY, tightMaxZ],
+    },
+    floorY,
+    ceilingY,
+    floorOutline,
+    ceilingOutline,
+  };
+}
 
 /** Find the offset just past `end_header\n` in a possibly-incomplete byte
  *  buffer. Returns -1 if the marker isn't present yet (caller should keep
@@ -73,7 +332,18 @@ function findEndHeader(buf: Uint8Array): number {
 function parsePlyHeader(headerStr: string): {
   count: number;
   stride: number;
-  layout: { x: number; y: number; z: number; r: number; g: number; b: number };
+  layout: {
+    x: number;
+    y: number;
+    z: number;
+    r: number;
+    g: number;
+    b: number;
+    /** Offset of the per-point float32 `confidence` field, or null if the
+     *  PLY does not include one. Present in the depth-derived points.ply
+     *  emitted by inference/inference/poses.py; absent in older bundles. */
+    conf: number | null;
+  };
 } {
   if (!headerStr.includes("format binary_little_endian 1.0")) {
     throw new Error("PLY: only binary_little_endian 1.0 supported");
@@ -119,6 +389,14 @@ function parsePlyHeader(headerStr: string): {
     throw new Error("PLY: expected uchar red/green/blue (points.ply layout)");
   }
 
+  // confidence is optional — points.ply written by poses.py since the depth
+  // pipeline lands includes it; older bundles do not.
+  const confEntry = offsetByName.confidence;
+  const confOff =
+    confEntry && (confEntry.type === "float" || confEntry.type === "float32")
+      ? confEntry.off
+      : null;
+
   return {
     count,
     stride,
@@ -129,6 +407,7 @@ function parsePlyHeader(headerStr: string): {
       r: offsetByName.red.off,
       g: offsetByName.green.off,
       b: offsetByName.blue.off,
+      conf: confOff,
     },
   };
 }
@@ -165,7 +444,13 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
   }>({ cancel: () => undefined, camera: null });
   const setCamera = useUI((s) => s.setCamera);
   const setCloudStats = useUI((s) => s.setCloudStats);
+  const setBounds = useUI((s) => s.setBounds);
   const selectedId = useUI((s) => s.selectedId);
+  const renderMode = useUI((s) => s.renderMode);
+  const schematicMode = useUI((s) => s.schematicMode);
+  const measureMode = useUI((s) => s.measureMode);
+  const measurements = useUI((s) => s.measurements);
+  const pendingPoint = useUI((s) => s.pendingPoint);
   const [debug, setDebug] = useState<DebugState>({ status: "idle", log: [] });
   const debugRef = useRef(debug);
   debugRef.current = debug;
@@ -208,6 +493,29 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
     radius: number;
   } | null>(null);
 
+  // Bridges from the component scope into the heavy useEffect. The effect
+  // mounts once per scene; everything below changes far more often (mode
+  // toggles, new measurements) and we don't want to remount on those.
+  const shaderMatRef = useRef<ShaderMaterial | null>(null);
+  const schematicGroupRef = useRef<Group | null>(null);
+  const measurementGroupRef = useRef<Group | null>(null);
+  const cloudRef = useRef<Points | null>(null);
+  const markDirtyRef = useRef<(() => void) | null>(null);
+  // Sibling click handler reads the latest store values via these refs so it
+  // doesn't need to re-bind on every state change.
+  const measureModeRef = useRef(measureMode);
+  const pendingPointRef = useRef(pendingPoint);
+  const renderModeRef = useRef(renderMode);
+  const schematicModeRef = useRef(schematicMode);
+  useEffect(() => { measureModeRef.current = measureMode; }, [measureMode]);
+  useEffect(() => { pendingPointRef.current = pendingPoint; }, [pendingPoint]);
+  useEffect(() => { renderModeRef.current = renderMode; }, [renderMode]);
+  useEffect(() => { schematicModeRef.current = schematicMode; }, [schematicMode]);
+
+  // Bounds (set by parser when stream completes) used to size + label the
+  // always-on AABB wireframe and the schematic helpers.
+  const boundsRef = useRef<{ min: Vec3; max: Vec3 } | null>(null);
+
   // Imperative API the surrounding UI (zoom buttons, minimap) calls into.
   type ViewerApi = {
     zoom: (factor: number) => void;
@@ -224,6 +532,117 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
     rgb: Float32Array; // (M*3,)
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   } | null>(null);
+  // Render mode → shader uMode. RGB = 0 / depth = 1 / confidence = 2.
+  useEffect(() => {
+    const mat = shaderMatRef.current;
+    if (!mat) return;
+    mat.uniforms.uMode.value =
+      renderMode === "depth" ? 1 : renderMode === "confidence" ? 2 : 0;
+    markDirtyRef.current?.();
+  }, [renderMode]);
+
+  // Schematic mode → cloud opacity + populate ground grid + cross sections.
+  // Re-runs when bounds become known so the helpers can size to the cloud.
+  const bounds = useUI((s) => s.bounds);
+  useEffect(() => {
+    const mat = shaderMatRef.current;
+    if (mat) {
+      mat.uniforms.uOpacity.value = schematicMode ? 0.25 : 1.0;
+      mat.transparent = schematicMode;
+    }
+    const group = schematicGroupRef.current;
+    if (!group) return;
+    // Wipe any previous helpers.
+    while (group.children.length) {
+      const c = group.children[0];
+      group.remove(c);
+      const o = c as unknown as {
+        geometry?: { dispose: () => void };
+        material?: { dispose: () => void };
+      };
+      o.geometry?.dispose?.();
+      o.material?.dispose?.();
+    }
+    if (!schematicMode || !bounds) {
+      group.visible = false;
+      markDirtyRef.current?.();
+      return;
+    }
+    group.visible = true;
+    const [minX, minY, minZ] = bounds.min;
+    const [maxX, maxY, maxZ] = bounds.max;
+    const extX = maxX - minX;
+    const extY = maxY - minY;
+    const extZ = maxZ - minZ;
+    const footprint = Math.max(extX, extZ);
+
+    // Ground grid: anchored at minY (post-flip floor), sized to cloud.
+    const grid = new GridHelper(
+      footprint * 1.4,
+      Math.max(8, Math.round(footprint * 8)),
+      0x6f5cff,
+      0x2a2740,
+    );
+    grid.position.set((minX + maxX) / 2, minY, (minZ + maxZ) / 2);
+    (grid.material as LineBasicMaterial).transparent = true;
+    (grid.material as LineBasicMaterial).opacity = 0.4;
+    group.add(grid);
+
+    // Three horizontal cross-section frames at 25 / 50 / 75% height. Each
+    // frame is the AABB top-face outline rendered at that y, hinting at
+    // how the captured volume reads at different elevations.
+    const sliceColor = new Color(0xffd166);
+    const slices = [0.25, 0.5, 0.75];
+    for (const t of slices) {
+      const y = minY + extY * t;
+      const verts = new Float32Array([
+        minX, y, minZ,  maxX, y, minZ,
+        maxX, y, minZ,  maxX, y, maxZ,
+        maxX, y, maxZ,  minX, y, maxZ,
+        minX, y, maxZ,  minX, y, minZ,
+      ]);
+      const geo = new BufferGeometry();
+      geo.setAttribute("position", new BufferAttribute(verts, 3));
+      const lineMat = new LineBasicMaterial({
+        color: sliceColor,
+        transparent: true,
+        opacity: 0.55,
+      });
+      group.add(new LineSegments(geo, lineMat));
+    }
+    markDirtyRef.current?.();
+  }, [schematicMode, bounds]);
+
+  // Measurements → 3D line segments. (HTML labels for distances are rendered
+  // by <MeasurementOverlay/>; this effect just maintains the in-scene lines
+  // and pending-point marker.)
+  useEffect(() => {
+    const group = measurementGroupRef.current;
+    if (!group) return;
+    while (group.children.length) {
+      const c = group.children[0];
+      group.remove(c);
+      const o = c as unknown as {
+        geometry?: { dispose: () => void };
+        material?: { dispose: () => void };
+      };
+      o.geometry?.dispose?.();
+      o.material?.dispose?.();
+    }
+    const lineColor = new Color(0xffe066);
+    for (const m of measurements) {
+      const verts = new Float32Array([
+        m.a[0], m.a[1], m.a[2],
+        m.b[0], m.b[1], m.b[2],
+      ]);
+      const geo = new BufferGeometry();
+      geo.setAttribute("position", new BufferAttribute(verts, 3));
+      const mat = new LineBasicMaterial({ color: lineColor });
+      group.add(new Line(geo, mat));
+    }
+    markDirtyRef.current?.();
+  }, [measurements]);
+
   useEffect(() => {
     if (!selectedId) return;
     const a = annotationsRef.current.find((x) => x.id === selectedId);
@@ -301,6 +720,40 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
 
       // Light scene scaffolding so the cloud has spatial context.
       scene.add(new GridHelper(8, 16, 0x3a3a46, 0x1a1a20));
+
+      // Schematic + measurement groups exist from the start (empty), get
+      // populated lazily by sibling effects once bounds are known and the
+      // user toggles modes / places measurements.
+      const schematicGroup = new Group();
+      schematicGroup.visible = false;
+      scene.add(schematicGroup);
+      schematicGroupRef.current = schematicGroup;
+      const measurementGroup = new Group();
+      scene.add(measurementGroup);
+      measurementGroupRef.current = measurementGroup;
+      cleanup.push(() => {
+        if (schematicGroupRef.current === schematicGroup) {
+          schematicGroupRef.current = null;
+        }
+        if (measurementGroupRef.current === measurementGroup) {
+          measurementGroupRef.current = null;
+        }
+        scene.remove(schematicGroup);
+        scene.remove(measurementGroup);
+        // Children may own geometries/materials — dispose those.
+        const disposeChildren = (g: Group) => {
+          g.traverse((obj) => {
+            const o = obj as unknown as {
+              geometry?: { dispose: () => void };
+              material?: { dispose: () => void };
+            };
+            o.geometry?.dispose?.();
+            o.material?.dispose?.();
+          });
+        };
+        disposeChildren(schematicGroup);
+        disposeChildren(measurementGroup);
+      });
 
       // Camera controls:
       //   left-drag   → orbit around `target` (theta/phi)
@@ -383,6 +836,12 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       const markDirty = () => {
         dirty = true;
       };
+      // Expose markDirty to sibling effects (mode toggles etc.) so they can
+      // schedule a redraw without owning the render loop.
+      markDirtyRef.current = markDirty;
+      cleanup.push(() => {
+        if (markDirtyRef.current === markDirty) markDirtyRef.current = null;
+      });
 
       const dom = renderer.domElement;
       dom.addEventListener("pointerdown", onDown);
@@ -402,6 +861,61 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         if (document.visibilityState === "visible") dirty = true;
       };
       document.addEventListener("visibilitychange", onVisibility);
+
+      // Click-to-measure raycasting. Distinguishes click from drag by
+      // tracking down/up pointer position; only fires when measureMode is
+      // active so it doesn't interfere with orbit/pan.
+      const raycaster = new Raycaster();
+      // THREE.Points raycasting picks the first point whose center is within
+      // `threshold` world units of the click ray. Our cloud is at metre
+      // scale, so 5cm reliably picks any visible cluster while keeping the
+      // nearest hit sensible.
+      raycaster.params.Points = { threshold: 0.05 };
+      let clickStart: { x: number; y: number; t: number } | null = null;
+      const onClickDown = (e: PointerEvent) => {
+        if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return;
+        clickStart = { x: e.clientX, y: e.clientY, t: performance.now() };
+      };
+      const onClickUp = (e: PointerEvent) => {
+        const start = clickStart;
+        clickStart = null;
+        if (!start) return;
+        if (!measureModeRef.current) return;
+        if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) > 4) return;
+        if (performance.now() - start.t > 600) return;
+        const c = cloudRef.current;
+        if (!c) return;
+        const rect = dom.getBoundingClientRect();
+        const ndc = new Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObject(c, false);
+        if (hits.length === 0) return;
+        // IMPORTANT: hits[0].point is the projection of the matched point
+        // onto the click ray, which is offset from the real surface point
+        // by up to `threshold` (5cm). For an accurate measurement we need
+        // the matched point's actual world position from the geometry.
+        const hit = hits[0];
+        const posAttr = c.geometry.attributes.position as BufferAttribute;
+        const idx = hit.index ?? 0;
+        const xyz: Vec3 = [
+          posAttr.getX(idx),
+          posAttr.getY(idx),
+          posAttr.getZ(idx),
+        ];
+        const ui = useUI.getState();
+        if (ui.pendingPoint) ui.finishMeasurement(xyz);
+        else ui.beginMeasurement(xyz);
+        markDirty();
+      };
+      dom.addEventListener("pointerdown", onClickDown);
+      window.addEventListener("pointerup", onClickUp);
+      cleanup.push(() => {
+        dom.removeEventListener("pointerdown", onClickDown);
+        window.removeEventListener("pointerup", onClickUp);
+      });
 
       // Imperative API for outside UI (zoom buttons, minimap).
       apiRef.current = {
@@ -502,13 +1016,21 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       };
       tick(performance.now());
 
-      // Three.js Points renderer over the parsed cloud. One BufferGeometry,
-      // one PointsMaterial, one Points object. Coordinate frame: PLY xyz
-      // passes through unchanged so annotation centroids (recorded in the
-      // same frame upstream) overlay correctly without a transform.
+      // Three.js Points renderer over the parsed cloud. Coordinate frame:
+      // PLY xyz passes through unchanged so annotation centroids (recorded in
+      // the same frame upstream) overlay correctly without a transform.
+      // We use a custom ShaderMaterial (not PointsMaterial) so a uniform
+      // can switch between RGB / depth-heatmap / confidence-heatmap modes
+      // without re-uploading any per-vertex data.
       let pointGeo: BufferGeometry | null = null;
-      let pointMat: PointsMaterial | null = null;
+      let pointMat: ShaderMaterial | null = null;
       let cloud: Points | null = null;
+      // Always-on AABB wireframe + per-axis HTML dimension labels. Built
+      // once when the stream completes; not present until then.
+      let bboxHelper: Box3Helper | null = null;
+      // Group of three.js objects added to the scene that need disposing.
+      // Populated as features (AABB, schematic, measurements) come online.
+      const ownedObjects: { dispose: () => void }[] = [];
       const abortCtl = new AbortController();
 
       cleanup.push(() => {
@@ -530,6 +1052,23 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
           setCloudStatsRef.current(null);
         } catch {
           /* race on unmount */
+        }
+        // Drop the AABB / dimension labels / schematic helpers / measurement
+        // lines registered after parse completes. Each entry is responsible
+        // for disposing its own three.js geometry/material.
+        for (const obj of ownedObjects) {
+          try {
+            obj.dispose();
+          } catch {
+            /* race */
+          }
+        }
+        ownedObjects.length = 0;
+        boundsRef.current = null;
+        try {
+          setBounds(null);
+        } catch {
+          /* race */
         }
         cancelAnimationFrame(raf);
         dom.removeEventListener("pointerdown", onDown);
@@ -581,18 +1120,36 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
           let headerDone = false;
           let count = 0;
           let stride = 0;
-          let layout: { x: number; y: number; z: number; r: number; g: number; b: number } | null = null;
+          let layout: {
+            x: number;
+            y: number;
+            z: number;
+            r: number;
+            g: number;
+            b: number;
+            conf: number | null;
+          } | null = null;
           let positions: Float32Array | null = null;
           let colors: Uint8Array | null = null;
+          let confidences: Float32Array | null = null;
           let pointsParsed = 0;
           let bytesRead = 0;
           let lastFlush = performance.now();
           const FLUSH_INTERVAL_MS = 200;
+          // Live-tracked AABB in viewer (post-flip) coords. Promoted to
+          // boundsRef + setBounds(...) once the stream completes so the
+          // overlay/AABB always reflects the final volume rather than
+          // chasing the partial cloud during streaming.
+          let minX = Infinity, maxX = -Infinity;
+          let minY = Infinity, maxY = -Infinity;
+          let minZ = Infinity, maxZ = -Infinity;
 
           const flush = () => {
             if (!pointGeo) return;
             (pointGeo.attributes.position as BufferAttribute).needsUpdate = true;
             (pointGeo.attributes.color as BufferAttribute).needsUpdate = true;
+            const ac = pointGeo.attributes.aConf as BufferAttribute | undefined;
+            if (ac) ac.needsUpdate = true;
             pointGeo.setDrawRange(0, pointsParsed);
             dirty = true;
             const pct = total > 0 ? Math.round((bytesRead / total) * 100) : 0;
@@ -625,6 +1182,7 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
               layout = info.layout;
               positions = new Float32Array(count * 3);
               colors = new Uint8Array(count * 3);
+              confidences = info.layout.conf != null ? new Float32Array(count) : null;
 
               // Build geometry now (empty draw range) and add to scene so the
               // user sees the cloud start to fill rather than a blank canvas.
@@ -632,23 +1190,103 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
               pointGeo.setAttribute("position", new BufferAttribute(positions, 3));
               // normalized=true → Uint8 [0,255] → vec3 [0,1] in shader for free.
               pointGeo.setAttribute("color", new BufferAttribute(colors, 3, true));
+              if (confidences) {
+                pointGeo.setAttribute("aConf", new BufferAttribute(confidences, 1));
+              }
               pointGeo.setDrawRange(0, 0);
-              // World-unit point size; sizeAttenuation perspective-shrinks
-              // distant points. 0.0035 ≈ 3.5 mm at scene scale.
-              pointMat = new PointsMaterial({
-                size: 0.0035,
-                sizeAttenuation: true,
-                vertexColors: true,
-                transparent: false,
+              // Custom shader material — equivalent to PointsMaterial in RGB
+              // mode, but drives all three render modes (RGB / depth / conf)
+              // through a single uMode uniform. Distance is computed in the
+              // vertex shader from world position so we don't need an extra
+              // per-point attribute. Confidence comes from the optional aConf
+              // attribute (only present when points.ply has a `confidence`
+              // property; we fall back to 1.0 otherwise).
+              pointMat = new ShaderMaterial({
+                uniforms: {
+                  uMode: { value: 0 }, // 0=rgb 1=depth 2=confidence
+                  uPointSize: { value: 0.0035 },
+                  uOpacity: { value: 1.0 },
+                  uMinDist: { value: 0.0 },
+                  uMaxDist: { value: 1.0 },
+                  uHasConf: { value: confidences ? 1 : 0 },
+                },
+                vertexShader: `
+                  attribute vec3 color;
+                  ${confidences ? "attribute float aConf;" : ""}
+                  uniform float uPointSize;
+                  varying vec3 vColor;
+                  varying float vDist;
+                  varying float vConf;
+                  void main() {
+                    vColor = color;
+                    vDist = length(position);
+                    ${confidences ? "vConf = aConf;" : "vConf = 1.0;"}
+                    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+                    // Perspective point-size attenuation matching three.js
+                    // PointsMaterial(sizeAttenuation: true).
+                    gl_PointSize = uPointSize * (300.0 / -mv.z);
+                    gl_Position = projectionMatrix * mv;
+                  }
+                `,
+                fragmentShader: `
+                  precision mediump float;
+                  uniform int uMode;
+                  uniform float uOpacity;
+                  uniform float uMinDist;
+                  uniform float uMaxDist;
+                  uniform int uHasConf;
+                  varying vec3 vColor;
+                  varying float vDist;
+                  varying float vConf;
+                  // Turbo-like colormap (Mikhail Bessmeltsev's approximation,
+                  // public domain). Cheap polynomial fit, no LUT needed.
+                  vec3 turbo(float t) {
+                    t = clamp(t, 0.0, 1.0);
+                    vec3 a = vec3(0.13572138, 4.61539260, -42.66032258);
+                    vec3 b = vec3(-152.94239396, 459.30493940, -700.74832297);
+                    vec3 c = vec3(564.13539948, -198.21580373, -23.96587314);
+                    float t2 = t * t;
+                    float t3 = t2 * t;
+                    return clamp(a + b * t + c * t2 + vec3(
+                      53.97720359, -16.20987022, 12.02644739) * t3, 0.0, 1.0);
+                  }
+                  void main() {
+                    vec3 rgb;
+                    if (uMode == 1) {
+                      float t = (vDist - uMinDist) / max(uMaxDist - uMinDist, 1e-3);
+                      rgb = turbo(t);
+                    } else if (uMode == 2) {
+                      rgb = uHasConf == 1 ? turbo(vConf) : vec3(0.5);
+                    } else {
+                      rgb = vColor;
+                    }
+                    gl_FragColor = vec4(rgb, uOpacity);
+                  }
+                `,
+                transparent: true,
                 depthWrite: true,
                 depthTest: true,
               });
               cloud = new Points(pointGeo, pointMat);
               cloud.frustumCulled = false; // bounds grow during stream; skip culling
               scene.add(cloud);
+              shaderMatRef.current = pointMat;
+              cloudRef.current = cloud;
+              cleanup.push(() => {
+                if (shaderMatRef.current === pointMat) shaderMatRef.current = null;
+                if (cloudRef.current === cloud) cloudRef.current = null;
+              });
 
               tail = tail.subarray(headerEnd);
               headerDone = true;
+              // Broadcast the target cloud count immediately so the pipeline
+              // panel matches the streaming overlay (otherwise it shows the
+              // splat.ply Gaussian count from the manifest — a different
+              // file — and disagrees with what's actually being rendered).
+              setCloudStatsRef.current({
+                count,
+                sizeMb: total / (1024 * 1024),
+              });
               pushDebug(
                 { sceneCount: 0, status: "parsing" },
                 `header parsed: count=${count.toLocaleString()} stride=${stride}; streaming body`,
@@ -668,15 +1306,28 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
                 const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
                 const lx = layout.x, ly = layout.y, lz = layout.z;
                 const lr = layout.r, lg = layout.g, lb = layout.b;
+                const lc = layout.conf;
                 for (let v = 0; v < verts; v++) {
                   const base = v * stride;
                   const i = pointsParsed + v;
-                  positions[i * 3] = view.getFloat32(base + lx, true);
-                  positions[i * 3 + 1] = -view.getFloat32(base + ly, true);
-                  positions[i * 3 + 2] = -view.getFloat32(base + lz, true);
+                  const px = view.getFloat32(base + lx, true);
+                  const py = -view.getFloat32(base + ly, true);
+                  const pz = -view.getFloat32(base + lz, true);
+                  positions[i * 3] = px;
+                  positions[i * 3 + 1] = py;
+                  positions[i * 3 + 2] = pz;
                   colors[i * 3] = tail[base + lr];
                   colors[i * 3 + 1] = tail[base + lg];
                   colors[i * 3 + 2] = tail[base + lb];
+                  if (confidences && lc != null) {
+                    confidences[i] = view.getFloat32(base + lc, true);
+                  }
+                  if (px < minX) minX = px;
+                  if (px > maxX) maxX = px;
+                  if (py < minY) minY = py;
+                  if (py > maxY) maxY = py;
+                  if (pz < minZ) minZ = pz;
+                  if (pz > maxZ) maxZ = pz;
                 }
                 pointsParsed += verts;
                 tail = tail.subarray(verts * stride);
@@ -745,6 +1396,102 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
               rgb: rgb.subarray(0, mi * 3),
               bounds: { minX, maxX, minZ, maxZ },
             });
+          }
+
+          // Compute a real bounding sphere now that all points are loaded.
+          // Without this, three.js's Points.raycast() early-outs against a
+          // stale empty sphere computed during streaming and click-to-measure
+          // returns zero hits even though the cloud is clearly visible.
+          if (pointGeo) {
+            pointGeo.computeBoundingSphere();
+          }
+
+          // Build the room footprint: a 2D occupancy grid over the floor
+          // projection, walked to produce axis-aligned boundary segments.
+          // Replaces the loose AABB with: (a) a tight room-shaped polygon at
+          // floor + ceiling height, and (b) a tighter dimension box derived
+          // from the occupied cells so the W/H/D labels reflect the actual
+          // captured volume rather than the worst-case point spread.
+          if (pointsParsed > 0 && Number.isFinite(minX) && positions) {
+            const room = computeRoomFootprint(
+              positions,
+              pointsParsed,
+              { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] },
+            );
+            const [tMinX, tMinY, tMinZ] = room.bounds.min;
+            const [tMaxX, tMaxY, tMaxZ] = room.bounds.max;
+            const extX = tMaxX - tMinX;
+            const extY = tMaxY - tMinY;
+            const extZ = tMaxZ - tMinZ;
+
+            // Dimension box: render at the tight room bounds.
+            const pad = Math.max(extX, extY, extZ) * 0.005;
+            const box = new Box3(
+              new Vector3(tMinX - pad, tMinY - pad, tMinZ - pad),
+              new Vector3(tMaxX + pad, tMaxY + pad, tMaxZ + pad),
+            );
+            const helperColor = new Color(0x9b85ff);
+            bboxHelper = new Box3Helper(box, helperColor);
+            const lineMat = (bboxHelper as unknown as { material?: LineBasicMaterial })
+              .material;
+            if (lineMat) {
+              lineMat.transparent = true;
+              lineMat.opacity = 0.45;
+            }
+            scene.add(bboxHelper);
+            ownedObjects.push({
+              dispose: () => {
+                if (bboxHelper) scene.remove(bboxHelper);
+              },
+            });
+
+            // Footprint polygon: floor outline + ceiling outline. Both are
+            // axis-aligned line segments hugging the actual room walls (and
+            // any furniture clusters that sit on the floor band). Always
+            // visible so even in RGB mode the room shape is unmistakable.
+            const outlineGroup = new Group();
+            const mkOutline = (verts: Float32Array, color: number, opacity: number) => {
+              const geo = new BufferGeometry();
+              geo.setAttribute("position", new BufferAttribute(verts, 3));
+              const mat = new LineBasicMaterial({
+                color: new Color(color),
+                transparent: true,
+                opacity,
+              });
+              return new LineSegments(geo, mat);
+            };
+            outlineGroup.add(mkOutline(room.floorOutline, 0x9b85ff, 0.85));
+            outlineGroup.add(mkOutline(room.ceilingOutline, 0x9b85ff, 0.45));
+            scene.add(outlineGroup);
+            ownedObjects.push({
+              dispose: () => {
+                outlineGroup.traverse((obj) => {
+                  const o = obj as unknown as {
+                    geometry?: { dispose: () => void };
+                    material?: { dispose: () => void };
+                  };
+                  o.geometry?.dispose?.();
+                  o.material?.dispose?.();
+                });
+                scene.remove(outlineGroup);
+              },
+            });
+
+            // Depth colormap normalization: use the tight room diagonal so
+            // the gradient spans the actual captured volume cleanly.
+            const diag = Math.sqrt(extX * extX + extY * extY + extZ * extZ);
+            if (pointMat) {
+              pointMat.uniforms.uMinDist.value = 0;
+              pointMat.uniforms.uMaxDist.value = Math.max(diag, 0.01);
+            }
+
+            const finalBounds = {
+              min: [tMinX - pad, tMinY - pad, tMinZ - pad] as Vec3,
+              max: [tMaxX + pad, tMaxY + pad, tMaxZ + pad] as Vec3,
+            };
+            boundsRef.current = finalBounds;
+            setBounds(finalBounds);
+            markDirty();
           }
         })
         .catch((err: unknown) => {
@@ -924,7 +1671,10 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
   }, [splatUrl, emptySplat]);
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full"
+      style={{ cursor: measureMode ? "crosshair" : undefined }}
+    >
       <div
         ref={containerRef}
         className="absolute inset-0 overflow-hidden bg-ink-950"
@@ -938,7 +1688,16 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
           getCamera={() => sceneRef.current.camera}
           containerRef={overlayRef}
         />
+        <DimensionOverlay
+          getCamera={() => sceneRef.current.camera}
+          containerRef={overlayRef}
+        />
+        <MeasurementOverlay
+          getCamera={() => sceneRef.current.camera}
+          containerRef={overlayRef}
+        />
       </div>
+      <ViewerToolbar />
       <DebugHUD debug={debug} />
       <ControlsHint
         annotations={annotations}
@@ -950,8 +1709,126 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       {miniPoints && (
         <Minimap
           points={miniPoints}
-          onPan={(x, z) => apiRef.current?.setTarget([x, 0.1, z])}
+          // Minimap reports clicks in PLY-frame z (matches the points it
+          // draws); setTarget expects renderer-frame z (negated). Flip here
+          // so click-to-pan moves the camera target to the spot the user
+          // actually pointed at, instead of mirroring across the Z axis.
+          onPan={(x, z) => apiRef.current?.setTarget([x, 0.1, -z])}
         />
+      )}
+    </div>
+  );
+}
+
+/** Floating toolbar for view-mode toggles. Lives top-center so it's
+ *  unmistakably the "demo controls" rather than a side widget. */
+function ViewerToolbar() {
+  const renderMode = useUI((s) => s.renderMode);
+  const cycleRenderMode = useUI((s) => s.cycleRenderMode);
+  const schematicMode = useUI((s) => s.schematicMode);
+  const toggleSchematic = useUI((s) => s.toggleSchematic);
+  const measureMode = useUI((s) => s.measureMode);
+  const toggleMeasureMode = useUI((s) => s.toggleMeasureMode);
+  const measurements = useUI((s) => s.measurements);
+  const pendingPoint = useUI((s) => s.pendingPoint);
+  const clearMeasurements = useUI((s) => s.clearMeasurements);
+  const cancelMeasurement = useUI((s) => s.cancelMeasurement);
+  const displayScale = useUI((s) => s.displayScale);
+  const setDisplayScale = useUI((s) => s.setDisplayScale);
+  const calibrateFromLastMeasurement = useUI((s) => s.calibrateFromLastMeasurement);
+  const modeLabel =
+    renderMode === "depth" ? "Depth" : renderMode === "confidence" ? "Confidence" : "RGB";
+
+  const onCalibrate = () => {
+    const last = measurements[measurements.length - 1];
+    if (!last) {
+      window.alert(
+        "Take a measurement first.\n\nClick Measure, click two points on something of known size (a door is ~80 cm wide; a typical doorway is 2.0 m tall), then come back and hit Calibrate.",
+      );
+      return;
+    }
+    const rawDistance = last.distance; // metres in VGGT-native units
+    const currentDisplayed = rawDistance * displayScale;
+    const input = window.prompt(
+      `Real-world distance for the most recent measurement?\n\n` +
+        `Currently shown: ${currentDisplayed.toFixed(3)} m\n\n` +
+        `Enter the true value in metres (e.g. "0.8" for an 80 cm door):`,
+      currentDisplayed.toFixed(2),
+    );
+    if (input == null) return;
+    const real = parseFloat(input);
+    if (!Number.isFinite(real) || real <= 0) {
+      window.alert("Need a positive number in metres.");
+      return;
+    }
+    calibrateFromLastMeasurement(real);
+  };
+  return (
+    <div className="pointer-events-auto absolute left-1/2 top-3 flex -translate-x-1/2 gap-1.5">
+      <button
+        onClick={cycleRenderMode}
+        className="rounded-md border border-ink-700/70 bg-ink-900/85 px-2.5 py-1 font-mono text-[11px] text-ink-100 backdrop-blur hover:border-accent-400/60 hover:text-accent-200"
+        title="Cycle point cloud coloring (RGB → Depth → Confidence)"
+      >
+        Mode: <span className="text-accent-300">{modeLabel}</span>
+      </button>
+      <button
+        onClick={toggleSchematic}
+        className={`rounded-md border px-2.5 py-1 font-mono text-[11px] backdrop-blur ${
+          schematicMode
+            ? "border-accent-400/80 bg-accent-500/15 text-accent-100"
+            : "border-ink-700/70 bg-ink-900/85 text-ink-100 hover:border-accent-400/60 hover:text-accent-200"
+        }`}
+        title="Overlay blueprint-style ground grid + cross-section frames"
+      >
+        {schematicMode ? "● Schematic" : "Schematic"}
+      </button>
+      <button
+        onClick={() => {
+          if (pendingPoint) cancelMeasurement();
+          toggleMeasureMode();
+        }}
+        className={`rounded-md border px-2.5 py-1 font-mono text-[11px] backdrop-blur ${
+          measureMode
+            ? "border-yellow-300/80 bg-yellow-400/15 text-yellow-100"
+            : "border-ink-700/70 bg-ink-900/85 text-ink-100 hover:border-yellow-300/60 hover:text-yellow-200"
+        }`}
+        title="Click two points on the cloud to measure their metric distance"
+      >
+        {measureMode ? "● Measure" : "Measure"}
+      </button>
+      {measurements.length > 0 && (
+        <button
+          onClick={clearMeasurements}
+          className="rounded-md border border-ink-700/70 bg-ink-900/85 px-2 py-1 font-mono text-[11px] text-ink-300 backdrop-blur hover:border-red-400/60 hover:text-red-300"
+          title="Clear all measurements"
+        >
+          Clear ({measurements.length})
+        </button>
+      )}
+      <button
+        onClick={onCalibrate}
+        className={`rounded-md border px-2.5 py-1 font-mono text-[11px] backdrop-blur ${
+          displayScale !== 1
+            ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
+            : "border-ink-700/70 bg-ink-900/85 text-ink-100 hover:border-emerald-400/60 hover:text-emerald-200"
+        }`}
+        title={
+          displayScale !== 1
+            ? `Calibrated × ${displayScale.toFixed(3)} (click to recalibrate from latest measurement)`
+            : "Take a measurement on a known reference, then click here to calibrate"
+        }
+      >
+        {displayScale !== 1 ? `✓ ×${displayScale.toFixed(2)}` : "Calibrate"}
+      </button>
+      {displayScale !== 1 && (
+        <button
+          onClick={() => setDisplayScale(1)}
+          className="rounded-md border border-ink-700/70 bg-ink-900/85 px-2 py-1 font-mono text-[11px] text-ink-300 backdrop-blur hover:border-red-400/60 hover:text-red-300"
+          title="Reset calibration (back to raw VGGT units)"
+        >
+          ↺
+        </button>
       )}
     </div>
   );
@@ -1102,7 +1979,14 @@ function Minimap({
   }, [points]);
 
   // Camera marker — drawn on top each render via a sibling canvas overlay.
-  const [camPx, camPy] = worldToCanvas(camera.position[0], camera.position[2]);
+  // The minimap stores points in PLY-frame z (re-flipped from the renderer's
+  // negated-z when miniPoints was built), but `camera.position` from the
+  // store is in renderer-frame z. Negate to bring the marker into the same
+  // frame as the points; otherwise the marker shows up mirrored on Z.
+  const [camPx, camPy] = worldToCanvas(camera.position[0], -camera.position[2]);
+  // Direction was already PLY-frame: `-camera.direction[2]` flips renderer-z
+  // → PLY-z so the arrow points the correct way relative to the (PLY-frame)
+  // canvas without further adjustment.
   const dirAngle = Math.atan2(-camera.direction[2], camera.direction[0]);
 
   return (
@@ -1142,6 +2026,159 @@ function Minimap({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Format a metric distance for on-screen labels: cm under 1 m, m above. */
+function fmtDist(m: number): string {
+  if (!Number.isFinite(m)) return "—";
+  if (m < 1) return `${(m * 100).toFixed(1)} cm`;
+  return `${m.toFixed(2)} m`;
+}
+
+/** Project a world-space point into the overlay container. Returns
+ *  null when the point is behind the camera. */
+function project3D(
+  worldX: number,
+  worldY: number,
+  worldZ: number,
+  camera: Camera,
+  width: number,
+  height: number,
+): { x: number; y: number } | null {
+  const v = new Vector3(worldX, worldY, worldZ).project(camera);
+  // v.z > 1 means behind near plane / off-screen depth; skip.
+  if (!Number.isFinite(v.x) || v.z > 1.5) return null;
+  return {
+    x: (v.x * 0.5 + 0.5) * width,
+    y: (-v.y * 0.5 + 0.5) * height,
+  };
+}
+
+/** W/H/D dimension labels pinned to the AABB edge midpoints. Always on
+ *  once bounds are known — instantly communicates real-world scale. */
+function DimensionOverlay({
+  getCamera,
+  containerRef,
+}: {
+  getCamera: () => Camera | null;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const bounds = useUI((s) => s.bounds);
+  const displayScale = useUI((s) => s.displayScale);
+  // Subscribe to camera so we re-render on every dirty tick.
+  useUI((s) => s.camera);
+  const cam = getCamera();
+  const container = containerRef.current;
+  if (!bounds || !cam || !container) return null;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  const [minX, minY, minZ] = bounds.min;
+  const [maxX, maxY, maxZ] = bounds.max;
+  const extX = (maxX - minX) * displayScale;
+  const extY = (maxY - minY) * displayScale;
+  const extZ = (maxZ - minZ) * displayScale;
+  // Midpoints of three orthogonal AABB edges. Pick edges that face the
+  // camera-facing front face so labels don't end up behind geometry.
+  const wMid = project3D((minX + maxX) / 2, minY, minZ, cam, w, h);
+  const hMid = project3D(minX, (minY + maxY) / 2, minZ, cam, w, h);
+  const dMid = project3D(minX, minY, (minZ + maxZ) / 2, cam, w, h);
+
+  const labelStyle = (
+    p: { x: number; y: number } | null,
+  ): React.CSSProperties => ({
+    position: "absolute",
+    left: p ? `${p.x}px` : "0",
+    top: p ? `${p.y}px` : "0",
+    transform: "translate(-50%, -50%)",
+    visibility: p ? "visible" : "hidden",
+  });
+
+  return (
+    <>
+      <div
+        className="rounded border border-accent-400/60 bg-ink-950/85 px-1.5 py-0.5 font-mono text-[10px] text-accent-200 shadow-md backdrop-blur"
+        style={labelStyle(wMid)}
+      >
+        W {fmtDist(extX)}
+      </div>
+      <div
+        className="rounded border border-accent-400/60 bg-ink-950/85 px-1.5 py-0.5 font-mono text-[10px] text-accent-200 shadow-md backdrop-blur"
+        style={labelStyle(hMid)}
+      >
+        H {fmtDist(extY)}
+      </div>
+      <div
+        className="rounded border border-accent-400/60 bg-ink-950/85 px-1.5 py-0.5 font-mono text-[10px] text-accent-200 shadow-md backdrop-blur"
+        style={labelStyle(dMid)}
+      >
+        D {fmtDist(extZ)}
+      </div>
+    </>
+  );
+}
+
+/** HTML label for each placed measurement (drawn at the midpoint of the
+ *  segment) plus a small marker on the pending first point. */
+function MeasurementOverlay({
+  getCamera,
+  containerRef,
+}: {
+  getCamera: () => Camera | null;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const measurements = useUI((s) => s.measurements);
+  const pendingPoint = useUI((s) => s.pendingPoint);
+  const displayScale = useUI((s) => s.displayScale);
+  useUI((s) => s.camera);
+  const cam = getCamera();
+  const container = containerRef.current;
+  if (!cam || !container) return null;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  return (
+    <>
+      {measurements.map((m) => {
+        const mid = project3D(
+          (m.a[0] + m.b[0]) / 2,
+          (m.a[1] + m.b[1]) / 2,
+          (m.a[2] + m.b[2]) / 2,
+          cam,
+          w,
+          h,
+        );
+        if (!mid) return null;
+        return (
+          <div
+            key={m.id}
+            className="rounded border border-yellow-300/70 bg-ink-950/90 px-1.5 py-0.5 font-mono text-[11px] text-yellow-200 shadow-md"
+            style={{
+              position: "absolute",
+              left: `${mid.x}px`,
+              top: `${mid.y}px`,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            {fmtDist(m.distance * displayScale)}
+          </div>
+        );
+      })}
+      {pendingPoint && (() => {
+        const p = project3D(pendingPoint[0], pendingPoint[1], pendingPoint[2], cam, w, h);
+        if (!p) return null;
+        return (
+          <div
+            className="size-3 rounded-full border-2 border-yellow-300 bg-yellow-400/40"
+            style={{
+              position: "absolute",
+              left: `${p.x}px`,
+              top: `${p.y}px`,
+              transform: "translate(-50%, -50%)",
+            }}
+          />
+        );
+      })()}
+    </>
   );
 }
 

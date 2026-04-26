@@ -97,8 +97,11 @@ def _check_env() -> None:
 
 
 def _client() -> Anthropic:
-    # Anthropic SDK uses auth_token (Bearer), NOT api_key. Spec hard rule.
-    return Anthropic(base_url=GATEWAY_URL, auth_token=os.environ["PYDANTIC_GATEWAY_KEY"])
+    # Routes through shared.gateway so this smoke proves the same client path
+    # the real pipeline uses (Anthropic SDK + Bearer auth_token + Gateway URL).
+    from shared.gateway import anthropic_client
+
+    return anthropic_client()
 
 
 def smoke_one_call(client: Anthropic) -> dict:

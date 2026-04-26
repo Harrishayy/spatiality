@@ -20,6 +20,14 @@ Background masks (walls, floor, ceiling) absorb a huge fraction of the
 splat. Track Gaussian sets above `bg_fraction` are dropped before the VLM
 ever sees them.
 
+Placement-accuracy improvements over v1:
+
+* Centroid uses the *opacity-weighted geometric median* (Weiszfeld) rather
+  than the arithmetic mean. Breakdown point ~50% vs ~25% for the mean even
+  after MAD trimming — a few survivor outliers no longer drag the centroid.
+* Bounding box uses the *5th–95th percentile per axis* rather than absolute
+  min/max. A single stray Gaussian per axis no longer blows the box up.
+
 The Cluster dataclass is reused from lift.py so the rest of the pipeline
 (vlm.label_clusters, cli._to_annotations) is untouched.
 """
@@ -96,6 +104,65 @@ def _project_all(
     u = np.rint(pix[:, 0]).astype(np.int32)
     v = np.rint(pix[:, 1]).astype(np.int32)
     return u, v, z_cam
+
+
+# ─── robust statistics ───────────────────────────────────────────────────
+
+
+def _geometric_median(
+    pts: np.ndarray, weights: np.ndarray | None = None, iters: int = 12, eps: float = 1e-7
+) -> np.ndarray:
+    """Weighted geometric median via Weiszfeld iteration.
+
+    L1-style estimator: minimises Σ wᵢ ‖pᵢ - x‖. Breakdown point 50%, vs
+    ~25% for MAD-trimmed mean — a handful of stray Gaussians can no longer
+    drag the centroid the way they did with `pts.mean(axis=0)`.
+    """
+    if pts.shape[0] == 0:
+        return np.zeros(3, dtype=np.float32)
+    if pts.shape[0] == 1:
+        return pts[0].astype(np.float32, copy=True)
+    w = (
+        np.ones(pts.shape[0], dtype=np.float64)
+        if weights is None
+        else np.asarray(weights, dtype=np.float64)
+    )
+    # Init at the weighted mean — close enough to the median that the
+    # iteration converges in 5-10 steps.
+    wsum = max(float(w.sum()), 1e-9)
+    x = (w[:, None] * pts).sum(axis=0) / wsum
+    for _ in range(iters):
+        d = np.linalg.norm(pts - x, axis=1)
+        # Avoid div-by-zero when a query point coincides with a sample.
+        wd = w / np.maximum(d, eps)
+        wd_sum = wd.sum()
+        if wd_sum < 1e-12:
+            break
+        x_new = (wd[:, None] * pts).sum(axis=0) / wd_sum
+        if np.linalg.norm(x_new - x) < eps:
+            x = x_new
+            break
+        x = x_new
+    return x.astype(np.float32)
+
+
+def _percentile_aabb(
+    pts: np.ndarray, lo_pct: float = 5.0, hi_pct: float = 95.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Robust axis-aligned bbox: use lo/hi percentiles, not min/max.
+
+    Single stray Gaussian per axis no longer blows the bbox out 10×.
+    Keeps the AABB shape (so the viewer doesn't change), but the box hugs
+    the object's actual extent within the chosen percentile band.
+    """
+    if pts.shape[0] == 0:
+        z = np.zeros(3, dtype=np.float32)
+        return z, z
+    if pts.shape[0] < 8:
+        return pts.min(axis=0).astype(np.float32), pts.max(axis=0).astype(np.float32)
+    lo = np.percentile(pts, lo_pct, axis=0).astype(np.float32)
+    hi = np.percentile(pts, hi_pct, axis=0).astype(np.float32)
+    return lo, hi
 
 
 # ─── Jaccard / union-find ────────────────────────────────────────────────
@@ -258,6 +325,7 @@ def cluster_via_masks(
     bg_fraction: float = 0.45,
     min_track_size: int = 40,
     max_clusters: int = 30,
+    scene_id: str | None = None,
 ) -> list[Cluster]:
     """Mask-projection lift. Drop-in replacement for lift.cluster().
 
@@ -265,10 +333,12 @@ def cluster_via_masks(
     interchangeably — both implement the Mask dataclass. Provenance flows into
     each Cluster's `sources` and `proposed_phrase` fields.
     """
+    sid = scene_id or scene_dir.name
     mask_count_sam = sum(1 for m in masks if m.source == "sam")
     mask_count_vlm = sum(1 for m in masks if m.source == "vlm")
     with logfire.span(
         "segmentation.lift.cluster",
+        scene_id=sid,
         method="masks",
         mask_count=len(masks),
         mask_count_sam=mask_count_sam,
@@ -335,7 +405,7 @@ def cluster_via_masks(
         # their back-side Gaussians.
         depth_eps = max(0.10, 0.02 * scene_extent)
 
-        with logfire.span("segmentation.lift.project", frame_count=len(cam_by_frame)):
+        with logfire.span("segmentation.lift.project", scene_id=sid, frame_count=len(cam_by_frame)):
             proj_by_frame: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
             zbuf_by_frame: dict[str, np.ndarray] = {}
             # Cache (h, w) per frame from any mask in that frame.
@@ -360,6 +430,16 @@ def cluster_via_masks(
                 if in_bounds.any():
                     bidx = np.flatnonzero(in_bounds)
                     np.minimum.at(zbuf, (v[bidx], u[bidx]), z[bidx])
+                # splat.ply is voxel-downsampled (~1.3 M Gaussians) so most
+                # mask pixels don't have a Gaussian projecting onto them —
+                # the raw zbuf is nearly all `inf` between the few dense
+                # foreground hits. Dilate (min-filter) so foreground depth
+                # propagates into gaps; without this the per-pixel "is this
+                # the front?" test becomes trivially true for any
+                # background Gaussian at a gap pixel, and the cluster
+                # picks up the entire wall behind a small object.
+                from scipy.ndimage import minimum_filter
+                zbuf = minimum_filter(zbuf, size=7)
                 zbuf_by_frame[frame_name] = zbuf
 
         # Step 2: per-mask Gaussian set (indices into the kept array). Now
@@ -368,6 +448,7 @@ def cluster_via_masks(
         # the cluster.
         with logfire.span(
             "segmentation.lift.hits",
+            scene_id=sid,
             mask_count=len(masks),
             depth_eps=depth_eps,
         ):
@@ -412,6 +493,7 @@ def cluster_via_masks(
         # Step 4: cross-frame mask grouping by Jaccard over Gaussian sets.
         with logfire.span(
             "segmentation.lift.merge",
+            scene_id=sid,
             mask_count=len(filtered),
             jaccard_min=jaccard_min,
         ):
@@ -436,25 +518,77 @@ def cluster_via_masks(
             global_idx = kept_idx[union]
             pts = centers[global_idx]
 
-            # Robust centroid: drop residual outliers via MAD (median + 2.5σ).
-            # The depth z-buffer in step 2 catches occlusion-bleed Gaussians;
-            # this catches the long-tail noise from depth-prediction wisps
-            # near silhouette edges. Cheap (~5 ms per cluster) and keeps the
-            # centroid pinned to the dense core of the object.
-            if pts.shape[0] >= 16:
-                median_xyz = np.median(pts, axis=0)
-                dist = np.linalg.norm(pts - median_xyz, axis=1)
-                mad = float(np.median(dist))
-                if mad > 1e-6:
-                    sigma = mad * 1.4826
-                    inliers = dist < (sigma * 2.5)
-                    if inliers.sum() >= max(8, min_track_size // 2):
+            # Anchor frame's camera = the viewpoint the SAM mask came from.
+            # Pick the frame with the largest mask area (this is also the
+            # cluster's anchor used for the VLM crop later).
+            sam_in_group_pre = [i for i in g if filtered_masks[i].source == "sam"]
+            anchor_pool_pre = sam_in_group_pre if sam_in_group_pre else g
+            anchor_local_pre = max(
+                anchor_pool_pre, key=lambda i: filtered_masks[i].area
+            )
+            anchor_pre = filtered_masks[anchor_local_pre]
+            anchor_cam = cam_by_frame.get(anchor_pre.frame_name)
+
+            # Depth-mode filter (along anchor camera ray) — the actual fix
+            # for multimodal clusters where SAM masks accidentally chain
+            # foreground + background through occlusion. Histogram the
+            # cluster's depths from the anchor viewpoint, find the dense
+            # peak, keep only points within depth_eps of that peak.
+            if anchor_cam is not None and pts.shape[0] >= 16:
+                ext = np.asarray(anchor_cam["extrinsic"], dtype=np.float32)
+                homo = np.concatenate(
+                    [pts, np.ones((pts.shape[0], 1), dtype=pts.dtype)], axis=1
+                )
+                cam_pts = homo @ ext.T
+                depths = cam_pts[:, 2]
+                # Restrict to points actually in front of anchor camera.
+                front = depths > 1e-6
+                if front.any():
+                    front_depths = depths[front]
+                    # 50-bin depth histogram → find densest layer.
+                    bins = max(20, min(60, front_depths.size // 8))
+                    hist, edges = np.histogram(front_depths, bins=bins)
+                    mode_bin = int(np.argmax(hist))
+                    mode_depth = float(0.5 * (edges[mode_bin] + edges[mode_bin + 1]))
+                    # Keep points within depth_eps of the mode (in metres,
+                    # same scale as the per-frame depth_eps from step 2).
+                    inliers = (
+                        front
+                        & (np.abs(depths - mode_depth) < depth_eps)
+                    )
+                    n_in = int(inliers.sum())
+                    if n_in >= max(8, min_track_size // 2) and n_in < pts.shape[0]:
                         pts = pts[inliers]
                         global_idx = global_idx[inliers]
 
-            centroid = pts.mean(axis=0)
-            bbox_lo = pts.min(axis=0)
-            bbox_hi = pts.max(axis=0)
+            # Final iterative MAD pass: trims silhouette wisps still present
+            # after the depth-mode filter.
+            if pts.shape[0] >= 16:
+                for _round in range(2):
+                    median_xyz = np.median(pts, axis=0)
+                    dist = np.linalg.norm(pts - median_xyz, axis=1)
+                    mad = float(np.median(dist))
+                    if mad <= 1e-6:
+                        break
+                    sigma = mad * 1.4826
+                    inliers = dist < (sigma * 2.0)
+                    n_in = int(inliers.sum())
+                    if n_in == pts.shape[0] or n_in < max(8, min_track_size // 2):
+                        break
+                    pts = pts[inliers]
+                    global_idx = global_idx[inliers]
+
+            # Opacity-weighted geometric median centroid. If opacity is
+            # available, weight by sigmoid(opacity) so dense surface
+            # Gaussians dominate over transparent wisps that survived the
+            # depth-mode + MAD filters; otherwise weight uniformly.
+            if opacity is not None:
+                op_kept = opacity[global_idx]
+                w_centroid = 1.0 / (1.0 + np.exp(-op_kept.astype(np.float64)))
+            else:
+                w_centroid = None
+            centroid = _geometric_median(pts, w_centroid)
+            bbox_lo, bbox_hi = _percentile_aabb(pts, lo_pct=5.0, hi_pct=95.0)
             # Anchor: prefer real SAM masks for tight crops; VLM bboxes are loose
             # rectangles. Fall back to VLM if no SAM mask is in the group.
             sam_in_group = [i for i in g if filtered_masks[i].source == "sam"]

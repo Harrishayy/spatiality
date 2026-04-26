@@ -228,7 +228,8 @@ def run_inference(payload: dict) -> dict:
     keyframes = int(payload.get("keyframes", 5))
     segment = bool(payload.get("segment", True))
     backend = payload.get("backend")
-    return _run_inference_impl(scene_id, keyframes, segment, backend)
+    vlm_model = payload.get("vlm_model")
+    return _run_inference_impl(scene_id, keyframes, segment, backend, vlm_model)
 
 
 @app.function(
@@ -245,6 +246,7 @@ def _inference_async(
     keyframes: int = 5,
     segment: bool = True,
     backend: str | None = None,
+    vlm_model: str | None = None,
 ) -> dict:
     """Plain (non-fastapi) entrypoint so process_video can `.spawn()` inference.
 
@@ -252,7 +254,7 @@ def _inference_async(
     can't be invoked via .spawn() (mirrors the run_segmentation / _segment_async
     pair below).
     """
-    return _run_inference_impl(scene_id, keyframes, segment, backend)
+    return _run_inference_impl(scene_id, keyframes, segment, backend, vlm_model)
 
 
 def _run_inference_impl(
@@ -260,6 +262,7 @@ def _run_inference_impl(
     keyframes: int,
     segment: bool,
     backend: str | None = None,
+    vlm_model: str | None = None,
 ) -> dict:
     import os
     import subprocess
@@ -339,13 +342,15 @@ def _run_inference_impl(
         spawned = False
         if segment:
             try:
-                _segment_async.spawn(scene_id, keyframes)
+                _segment_async.spawn(scene_id, keyframes, vlm_model)
                 spawned = True
             except Exception as exc:
                 print(f"segmentation spawn failed: {exc!r}", flush=True)
                 span.set_attribute("segmentation_spawn_error", str(exc)[:200])
 
         span.set_attribute("segmentation_spawned", spawned)
+        if vlm_model:
+            span.set_attribute("vlm_model", vlm_model)
         return {
             "status": "ok",
             "scene_id": scene_id,
@@ -367,8 +372,12 @@ def _run_pipeline_subprocess(
 
     import logfire
 
+    # Fixed span name with `stage` as an attribute — Logfire treats `{x}` in
+    # msg_templates as placeholder syntax, which made earlier dynamic names
+    # show up as the literal `modal.subprocess.{stage}` in traces. The UI
+    # groups subprocess spans by attributes.stage instead of the name suffix.
     with logfire.span(
-        f"modal.subprocess.{stage}",
+        "modal.subprocess",
         scene_id=scene_id,
         stage=stage,
         argv=" ".join(cmd),
@@ -401,14 +410,16 @@ def _run_pipeline_subprocess(
     cpu=4.0,
     memory=16384,
 )
-def _segment_async(scene_id: str, keyframes: int) -> dict:
+def _segment_async(
+    scene_id: str, keyframes: int, vlm_model: str | None = None
+) -> dict:
     """Plain (non-fastapi) entrypoint for fire-and-forget segmentation.
 
     Bodies of `run_segmentation` (web) and this function are identical and
     delegate to the same in-container subprocess; the split only exists
     because @modal.fastapi_endpoint functions can't be invoked via .spawn().
     """
-    return _segment_impl(scene_id, keyframes)
+    return _segment_impl(scene_id, keyframes, vlm_model)
 
 
 @app.function(
@@ -425,19 +436,24 @@ def run_segmentation(payload: dict) -> dict:
     """SAM 3.1 masks + lift_masks projection + Claude Haiku VLM labels.
 
     POST body:
-      {"scene_id": "...", "keyframes": 5}
+      {"scene_id": "...", "keyframes": 5, "vlm_model": "claude-haiku-4-5"?}
     Requires inference outputs (splat.ply, cameras.json, frames/) in the volume.
     """
     scene_id = payload["scene_id"]
     keyframes = int(payload.get("keyframes", 5))
-    return _segment_impl(scene_id, keyframes)
+    vlm_model = payload.get("vlm_model")
+    return _segment_impl(scene_id, keyframes, vlm_model)
 
 
-def _segment_impl(scene_id: str, keyframes: int) -> dict:
+def _segment_impl(
+    scene_id: str, keyframes: int, vlm_model: str | None = None
+) -> dict:
     """Shared body for the web endpoint AND the spawn-able plain function.
 
     Commits the volume once before (so the web flips to segmentation=running
     immediately) and once after (so annotations.json appears atomically).
+    `vlm_model` overrides the default (Haiku 4.5) by setting VLM_MODEL on the
+    subprocess env — segmentation/vlm.py reads it via os.environ.
     """
     import os
 
@@ -451,11 +467,19 @@ def _segment_impl(scene_id: str, keyframes: int) -> dict:
 
     env = os.environ.copy()
     env.update(COMMON_ENV)
+    if vlm_model:
+        # Whitelist guards against payload injection landing in env.
+        if vlm_model not in (
+            "claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"
+        ):
+            raise ValueError(f"unknown vlm_model: {vlm_model!r}")
+        env["VLM_MODEL"] = vlm_model
 
     with logfire.span(
         SPAN_MODAL_RUN_SEGMENTATION,
         scene_id=scene_id,
         keyframes=keyframes,
+        vlm_model=vlm_model or env.get("VLM_MODEL", "claude-haiku-4-5"),
     ):
         artifacts_volume.reload()
 
@@ -799,6 +823,11 @@ def _process_video_body(
     target_long_side = int(settings.get("target_long_side", 1920))
     keyframes = int(settings.get("keyframes", 5))
     segment = bool(settings.get("segment", True))
+    vlm_model = settings.get("vlm_model")  # forwarded to segmentation env
+    if vlm_model and vlm_model not in (
+        "claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"
+    ):
+        raise ValueError(f"unknown vlm_model: {vlm_model!r}")
 
     artifacts_volume.reload()
     scene_dir = Path(f"/artifacts/scenes/{scene_id}")
@@ -952,7 +981,7 @@ def _process_video_body(
     # ── Fire inference ─────────────────────────────────────────────────
     spawned = False
     try:
-        _inference_async.spawn(scene_id, keyframes, segment, backend)
+        _inference_async.spawn(scene_id, keyframes, segment, backend, vlm_model)
         spawned = True
     except Exception as exc:
         print(f"inference spawn failed: {exc!r}", flush=True)
@@ -1029,19 +1058,44 @@ def get_artifact(scene_id: str, file: str):
     streams from disk to wire as bytes are read. For large artifacts (notably
     the per-pixel `points.ply` at ~230 MB) this drops time-to-first-byte by
     1-2 s and avoids holding the full payload in container memory.
+
+    Also allows `frames/<name>.{jpg,png}` so the pipeline drill-down UI can
+    render keyframe thumbnails with VLM bboxes overlaid. The path is
+    validated against directory-traversal: only a single `frames/`-prefixed
+    image basename, no `..`, no nested paths.
     """
     from pathlib import Path
     from fastapi import Response
     from fastapi.responses import FileResponse
 
-    if file not in _ALLOWED_ARTIFACTS:
+    is_frame = file.startswith("frames/")
+    if is_frame:
+        # frames/<basename>.<jpg|png|jpeg> only — no traversal, no nesting.
+        rest = file[len("frames/") :]
+        if (
+            ".." in rest
+            or "/" in rest
+            or "\\" in rest
+            or not rest
+            or rest.startswith(".")
+        ):
+            return Response(status_code=400, content=f"file not allowed: {file}")
+        ext = rest.rsplit(".", 1)[-1].lower() if "." in rest else ""
+        if ext not in ("jpg", "jpeg", "png"):
+            return Response(status_code=400, content=f"file not allowed: {file}")
+    elif file not in _ALLOWED_ARTIFACTS:
         return Response(status_code=400, content=f"file not allowed: {file}")
     artifacts_volume.reload()
     p = Path(f"/artifacts/scenes/{scene_id}/{file}")
     if not p.exists():
         return Response(status_code=404)
-    media = _ARTIFACT_CONTENT_TYPE.get(file, "application/octet-stream")
-    cache = "no-cache" if file == "manifest.json" else "public, max-age=300"
+    if is_frame:
+        ext = p.suffix.lower()
+        media = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        cache = "public, max-age=86400, immutable"
+    else:
+        media = _ARTIFACT_CONTENT_TYPE.get(file, "application/octet-stream")
+        cache = "no-cache" if file == "manifest.json" else "public, max-age=300"
     return FileResponse(
         path=str(p),
         media_type=media,

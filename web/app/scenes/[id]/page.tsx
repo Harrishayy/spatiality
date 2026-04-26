@@ -6,12 +6,17 @@ import { useParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Header } from "@/components/Header";
 import { PipelineProgress } from "@/components/PipelineProgress";
-import { SidePanel } from "@/components/SidePanel";
+import {
+  SceneDrawerOverlay,
+  SceneSideColumn,
+  type SceneSection,
+} from "@/components/SidePanel";
 import { StageDrawer } from "@/components/StageDrawer";
 import { WhereAmIButton } from "@/components/WhereAmIButton";
 import { useChat } from "@/hooks/useChat";
 import { useScene } from "@/hooks/useScene";
 import { DEMO_SCENE_ID } from "@/lib/api";
+import { useUI } from "@/store/ui";
 import type { Manifest, StageStatus } from "@/lib/types";
 
 const SplatViewer = dynamic(
@@ -24,15 +29,16 @@ export default function ScenePage() {
   const sceneId = params?.id ?? DEMO_SCENE_ID;
   const { manifest, annotations, splatUrl, splatReady, segReady } = useScene(sceneId);
   const { messages, send, append } = useChat(sceneId);
-  const [showSide, setShowSide] = useState(false);
+  const selectedId = useUI((s) => s.selectedId);
+  const [openSection, setOpenSection] = useState<SceneSection | null>(null);
 
+  // When the user picks an object marker, swing the Evidence drawer open.
+  // When they deselect, fold Evidence back away — but leave Pipeline /
+  // Objects alone so the user's choice isn't fought over.
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
-    setShowSide(mq.matches);
-    const onChange = (e: MediaQueryListEvent) => setShowSide(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+    if (selectedId) setOpenSection("evidence");
+    else setOpenSection((s) => (s === "evidence" ? null : s));
+  }, [selectedId]);
 
   const m = manifest.data;
   // Stable reference: react-query gives us the same array across renders when
@@ -71,12 +77,6 @@ export default function ScenePage() {
                 />
               </div>
             )}
-            <button
-              onClick={() => setShowSide((s) => !s)}
-              className="pointer-events-auto lp-btn lp-btn-ghost lp-btn-sm md:hidden"
-            >
-              {showSide ? "Hide ▸" : "Chat ◂"}
-            </button>
           </div>
 
           {splatReady && !segReady && segStatus !== "failed" && (
@@ -106,26 +106,31 @@ export default function ScenePage() {
               </div>
             </DismissibleBanner>
           )}
-        </section>
 
-        <div
-          className={[
-            "absolute inset-y-0 right-0 z-10 w-full bg-ink-950/95 backdrop-blur md:relative md:bg-transparent md:backdrop-blur-none",
-            "transition-transform md:max-w-sm",
-            showSide ? "translate-x-0" : "translate-x-full md:translate-x-0",
-          ].join(" ")}
-        >
           {m && (
-            <SidePanel
+            <SceneDrawerOverlay
               manifest={m}
               annotations={annos}
-              messages={messages}
-              onSend={send}
-              loading={!splatReady}
               segStatus={segStatus}
+              openSection={openSection}
+              onClose={() => setOpenSection(null)}
             />
           )}
-        </div>
+        </section>
+
+        {m && (
+          <SceneSideColumn
+            manifest={m}
+            annotations={annos}
+            messages={messages}
+            onSend={send}
+            loading={!splatReady}
+            openSection={openSection}
+            onToggleSection={(s) =>
+              setOpenSection((prev) => (prev === s ? null : s))
+            }
+          />
+        )}
       </main>
 
       {/* Drill-down drawer — opens when a Pipeline row is clicked. Lives at

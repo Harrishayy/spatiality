@@ -1,0 +1,78 @@
+[
+  {
+    "id": "obj_chair",
+    "label": "side chair",
+    "centroid": [
+      -1,
+      -0.4,
+      1
+    ],
+    "bbox": [
+      [
+        -1.3,
+        -0.8,
+        0.7
+      ],
+      [
+        -0.7,
+        0,
+        1.3
+      ]
+    ],
+    "color": "#ff9d6f",
+    "confidence": 0.92,
+    "alternatives": [
+      "armchair",
+      "stool"
+    ],
+    "frame_ids": []
+  },
+  {
+    "id": "obj_table",
+    "label": "low table",
+    "centroid": [
+      0.8,
+      -0.42,
+      -0.5
+    ],
+    "bbox": [
+      [
+        0.2,
+        -0.46,
+        -0.9
+      ],
+      [
+        1.4,
+        -0.2,
+        -0.1
+      ]
+    ],
+    "color": "#ffd29c",
+    "confidence": 0.87,
+    "frame_ids": []
+  },
+  {
+    "id": "obj_lamp",
+    "label": "table lamp",
+    "centroid": [
+      0.8,
+      -0.7,
+      -0.5
+    ],
+    "bbox": [
+      [
+        0.71,
+        -0.95,
+        -0.59
+      ],
+      [
+        0.89,
+        -0.45,
+        -0.41
+      ]
+    ],
+    "color": "#ff6b4a",
+    "confidence": 0.81,
+    "frame_ids": []
+  }
+]

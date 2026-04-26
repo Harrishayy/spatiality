@@ -63,6 +63,568 @@ button { font: inherit; }
 .lp-serif-accent { color: var(--accent-300); font-style: italic; }
 .lp-sans { font-family: var(--sans); }
 
+/* ─── v2 design tokens (refined / editorial) ──────────────────────
+   These are layered ON TOP of the existing .lp-* classes — they
+   replace the loud chrome (uppercase tracking, neon glows, hard
+   inky borders) with a sleeker Stripe / Carbon Copy feel. Same
+   warm-sunset palette, different rhythm: more whitespace, calmer
+   surfaces, shorter mono presence, gentler depth.
+*/
+:root {
+  --hairline: rgba(255, 235, 220, 0.06);
+  --hairline-strong: rgba(255, 235, 220, 0.10);
+  --surface-1: #1f1219;        /* base card */
+  --surface-2: #261520;        /* hover / nested */
+  --surface-glass: rgba(31, 18, 25, 0.72);
+  --shadow-card:
+    0 1px 0 rgba(255, 235, 220, 0.04) inset,
+    0 22px 60px -32px rgba(0, 0, 0, 0.7),
+    0 4px 14px -8px rgba(0, 0, 0, 0.6);
+  --shadow-soft:
+    0 12px 32px -20px rgba(0, 0, 0, 0.55);
+  --radius-card: 18px;
+  --radius-input: 12px;
+  --space-card: 28px;
+  --label-color: var(--ink-400);
+}
+
+/* Eyebrows: small sentence-case sans-serif label (NOT uppercase).
+   Use this anywhere the old code reaches for `font-mono uppercase
+   tracking-wider`. Keeps a single restrained voice. */
+.lp-eyebrow {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--label-color);
+}
+.lp-eyebrow-mono {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--ink-500);
+  text-transform: none;
+}
+
+/* ─── v2 overrides ──────────────────────────────────────────────── */
+.lp-card {
+  border: 1px solid var(--hairline);
+  background: var(--surface-1);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.lp-card-head {
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+.lp-card-title {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--ink-100);
+}
+.lp-stage-row {
+  padding: 18px 24px;
+  border-top: 1px solid var(--hairline);
+}
+.lp-stage-label {
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.lp-status-pill {
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid var(--hairline-strong);
+  background: rgba(255, 235, 220, 0.03);
+  color: var(--ink-300);
+}
+.lp-side-section-id {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ink-500);
+}
+.lp-side-section-accent {
+  font-family: var(--sans);
+  font-style: normal;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.005em;
+  color: var(--ink-300);
+}
+.lp-side-section-title { gap: 10px; }
+
+/* App header — quieter brand mark, sentence-case sub-label */
+.lp-app-header {
+  padding: 16px 24px;
+  background: var(--surface-glass);
+  border-bottom: 1px solid var(--hairline);
+}
+.lp-app-brand-mark {
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent-500) 0%, var(--accent-300) 100%);
+  box-shadow: none;
+}
+.lp-app-brand-title {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 15.5px;
+  letter-spacing: -0.012em;
+}
+.lp-app-brand-id {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-500);
+  margin-top: 2px;
+}
+.lp-app-header-tools {
+  background: rgba(255, 235, 220, 0.025);
+  border: 1px solid var(--hairline);
+}
+
+/* Objects list — calmer hover/selection, no neon halos */
+.lp-objects-row {
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: transparent;
+  transition: background 140ms ease;
+}
+.lp-objects-row:hover {
+  background: rgba(255, 235, 220, 0.035);
+  border-color: transparent;
+  box-shadow: none;
+}
+.lp-objects-row--selected {
+  background: rgba(255, 107, 74, 0.08);
+  border-color: transparent;
+  box-shadow: inset 2px 0 0 var(--accent-400);
+}
+.lp-objects-label {
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
+}
+.lp-objects-conf {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ink-500);
+}
+
+/* Stage dots — subtle, no glow */
+.lp-stage-dot--complete { box-shadow: none; }
+.lp-stage-dot--running { box-shadow: none; }
+.lp-stage-dot--failed  { box-shadow: none; }
+
+/* Buttons — slightly bigger touch targets, refined radii */
+.lp-btn {
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
+}
+.lp-btn-sm { padding: 8px 13px; font-size: 12.5px; border-radius: 10px; }
+.lp-btn-lg { padding: 14px 22px; font-size: 14.5px; border-radius: 14px; }
+.lp-btn-ghost {
+  background: transparent;
+  border-color: var(--hairline-strong);
+  color: var(--ink-200);
+  backdrop-filter: none;
+}
+.lp-btn-ghost:hover { border-color: rgba(255, 235, 220, 0.20); color: var(--ink-100); }
+
+/* Mode chip / file chip — sentence-case calm */
+.lp-mode-chip {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--ink-400);
+  padding: 5px 10px;
+  border-radius: 8px;
+}
+.lp-mode-chip--on {
+  background: rgba(255, 107, 74, 0.10);
+  border-color: rgba(255, 157, 111, 0.35);
+  color: var(--accent-300);
+}
+.lp-file-chip {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border-color: var(--hairline-strong);
+  color: var(--ink-300);
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+/* Stats — drop the boxed-in border-grid for a softer scan */
+.lp-stats-row {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+}
+.lp-stats-cell {
+  padding: 22px 18px;
+  border-left: 1px solid var(--hairline);
+}
+.lp-stats-label {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-500);
+  margin-top: 8px;
+}
+.lp-stats-value {
+  font-family: var(--sans);
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  font-size: 26px;
+}
+
+/* Modal labels — drop the uppercase mono */
+.lp-modal-label {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-400);
+}
+.lp-modal-hint {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-500);
+}
+
+/* Side panel scroll surface — no radial sunset, calmer */
+.lp-side {
+  padding: 20px;
+  gap: 16px;
+  background: linear-gradient(180deg, var(--surface-1), #160c11);
+  border-left: 1px solid var(--hairline);
+}
+.lp-side-section-head { padding: 0; }
+
+/* Form primitives — used by SettingsPanel + Uploader */
+.lp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lp-field-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.lp-field-label {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.003em;
+  color: var(--ink-200);
+}
+.lp-field-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--ink-300);
+}
+.lp-field-help {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-500);
+}
+
+/* Range slider — flatter, longer track */
+.lp-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 235, 220, 0.08);
+  outline: none;
+  cursor: pointer;
+}
+.lp-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--ink-100);
+  border: 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  transition: transform 120ms ease;
+}
+.lp-range::-webkit-slider-thumb:hover { transform: scale(1.08); }
+.lp-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--ink-100);
+  border: 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+/* Segmented control (toggle / model picker rows) */
+.lp-segmented {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lp-segmented-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink-300);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.003em;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.lp-segmented-row:hover {
+  background: rgba(255, 235, 220, 0.035);
+  border-color: var(--hairline-strong);
+  color: var(--ink-100);
+}
+.lp-segmented-row--on {
+  background: rgba(255, 107, 74, 0.10);
+  border-color: rgba(255, 157, 111, 0.35);
+  color: var(--ink-100);
+}
+.lp-segmented-row--on .lp-segmented-meta { color: var(--accent-300); }
+.lp-segmented-meta {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  color: var(--ink-500);
+}
+
+/* Surface card variant for forms / settings — less inset gradient,
+   more breathing room than the stat-style .lp-card. */
+.lp-surface {
+  border: 1px solid var(--hairline);
+  background: var(--surface-1);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-card);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.lp-surface-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.lp-surface-title {
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--ink-100);
+}
+.lp-surface-sub {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink-500);
+}
+
+/* Drop zone — refined dashed surface */
+.lp-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 280px;
+  padding: 36px 28px;
+  border: 1px dashed rgba(255, 235, 220, 0.14);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.lp-dropzone:hover,
+.lp-dropzone--over {
+  border-color: rgba(255, 157, 111, 0.5);
+  background: rgba(255, 107, 74, 0.04);
+}
+.lp-dropzone-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent-500) 0%, var(--accent-300) 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-950);
+  font-size: 22px;
+  line-height: 1;
+}
+.lp-dropzone-title {
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--ink-100);
+}
+.lp-dropzone-sub {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-500);
+}
+
+/* Chat input — calmer send button (no halo) */
+.lp-chat-input--shell {
+  padding: 12px 12px 12px 16px;
+  background: rgba(255, 235, 220, 0.025);
+  border-top: 1px solid var(--hairline);
+}
+.lp-chat-input--field {
+  font-family: var(--sans);
+  font-size: 14px;
+  letter-spacing: -0.005em;
+}
+.lp-chat-input--send {
+  background: var(--accent-500);
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  box-shadow: var(--shadow-soft);
+}
+.lp-chat-input--send:hover:not(:disabled) {
+  background: var(--accent-400);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-soft);
+}
+.lp-chat-input--send-glyph { font-size: 12px; opacity: 0.85; }
+.lp-chat-shell {
+  border: 1px solid var(--hairline);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Bubbles — softer agent surface */
+.lp-bubble--agent {
+  background: rgba(255, 235, 220, 0.04);
+  border-color: var(--hairline-strong);
+}
+.lp-bubble--agent::before { display: none; }
+.lp-bubble-serif {
+  font-family: var(--sans);
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink-100);
+  font-size: 13px;
+}
+
+/* Pin label — sentence-case */
+.lp-pin-label {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  background: rgba(31, 18, 25, 0.85);
+  border-color: var(--hairline-strong);
+  color: var(--ink-200);
+}
+
+/* Annotation 3D pill */
+.lp-anno-pill { background: rgba(31, 18, 25, 0.85); border-color: var(--hairline-strong); }
+.lp-anno-pill-id {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-500);
+}
+.lp-anno-pill-conf { font-family: var(--sans); font-size: 11px; color: var(--ink-500); }
+
+/* Where-am-I — calmer pill */
+.lp-where-btn {
+  background: var(--accent-500);
+  box-shadow: var(--shadow-soft);
+}
+.lp-where-btn:hover:not(:disabled) {
+  background: var(--accent-400);
+  box-shadow: var(--shadow-soft);
+  transform: translateY(-1px);
+}
+
+/* Primary action — refined coral pill, no neon halo */
+.lp-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 15px 22px;
+  border-radius: 14px;
+  border: 0;
+  background: var(--accent-500);
+  color: var(--ink-950);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  cursor: pointer;
+  transition: background 140ms ease, transform 120ms ease;
+  box-shadow: var(--shadow-soft);
+}
+.lp-cta:hover:not(:disabled) {
+  background: var(--accent-400);
+  transform: translateY(-1px);
+}
+.lp-cta:disabled {
+  background: rgba(255, 235, 220, 0.06);
+  color: var(--ink-500);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 /* ─── buttons ────────────────────────────────────────────────── */
 .lp-btn {
   display: inline-flex;
@@ -1900,6 +2462,406 @@ button { font: inherit; }
 }
 .lp-demos-page-empty p { margin: 0; max-width: 460px; }
 .lp-demos-page-empty-detail { color: var(--ink-500); font-size: 11px; }
+
+/* ─── scene viewer: nav rail + sliding drawer ───────────────── */
+.lp-scene-aside {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-shrink: 0;
+}
+.lp-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 88px;
+  padding: 18px 8px;
+  background:
+    linear-gradient(180deg, rgba(38,21,32,0.92), rgba(17,9,14,0.92));
+  border-left: 1px solid var(--ink-800);
+  border-right: 1px solid var(--ink-800);
+}
+.lp-rail-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 72px;
+  padding: 13px 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink-400);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.lp-rail-btn:hover {
+  background: rgba(255,107,74,0.10);
+  color: var(--ink-100);
+}
+.lp-rail-btn--on {
+  background: rgba(255,107,74,0.16);
+  border-color: rgba(255,157,111,0.45);
+  color: var(--accent-300);
+  box-shadow: 0 0 22px -6px rgba(255,107,74,0.5);
+}
+.lp-rail-btn-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.lp-rail-btn-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-family: var(--mono);
+}
+.lp-rail-btn-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-500);
+  color: var(--ink-950);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 12px -2px rgba(255,107,74,0.65);
+}
+.lp-rail-divider {
+  width: 36px;
+  height: 1px;
+  background: var(--ink-800);
+  margin: 6px 0;
+}
+
+/* Persistent chat column */
+.lp-chat-column {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  height: 100%;
+  min-height: 0;
+  background: linear-gradient(180deg, var(--ink-900), var(--ink-950));
+  border-left: 1px solid var(--ink-800);
+}
+.lp-chat-column-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--ink-800);
+}
+.lp-chat-column-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 16px;
+  color: var(--ink-100);
+  letter-spacing: -0.015em;
+}
+.lp-chat-column-title em {
+  font-family: var(--serif);
+  font-weight: 300;
+  font-style: italic;
+  color: var(--accent-300);
+  font-size: 13px;
+  margin-left: 6px;
+}
+.lp-chat-column-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px;
+}
+.lp-chat-column-body .lp-chat-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Drawer — slides out from the rail. No card chrome: same gradient as the
+   rail itself, butts right up against it, full canvas height, and only the
+   leading (left) edge gets a divider so it reads as one continuous surface
+   with the navbar. */
+.lp-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: min(360px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--ink-800);
+  background: linear-gradient(180deg, rgba(38,21,32,0.92), rgba(17,9,14,0.92));
+  z-index: 30;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 260ms cubic-bezier(0.22, 0.85, 0.3, 1), opacity 200ms ease;
+}
+.lp-drawer--open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.lp-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--ink-800);
+}
+.lp-drawer-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.lp-drawer-title-name {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: -0.015em;
+  color: var(--ink-100);
+}
+.lp-drawer-title-accent {
+  font-family: var(--serif);
+  font-weight: 300;
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--accent-300);
+}
+.lp-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-800);
+  background: transparent;
+  color: var(--ink-300);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.lp-drawer-close:hover {
+  background: rgba(255,107,74,0.14);
+  color: var(--ink-100);
+  border-color: rgba(255,157,111,0.4);
+}
+.lp-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Flatten nested chrome — the drawer is already a card with its own
+   header, so inner PipelineProgress / cards shouldn't double-frame. */
+.lp-drawer-body .lp-card {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
+}
+.lp-drawer-body .lp-card-head { display: none; }
+
+/* Pipeline stages styled to match the Objects-row aesthetic — rounded
+   rows with the same dusky surface, hover lift, and right-aligned meta. */
+.lp-drawer-body .lp-stage-list {
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+.lp-drawer-body .lp-stage-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(38,21,32,0.4);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.lp-drawer-body .lp-stage-row:hover {
+  background: rgba(38,21,32,0.7);
+  border-color: var(--ink-800);
+  box-shadow: inset 0 0 0 1px rgba(255,157,111,0.18);
+}
+.lp-drawer-body .lp-stage-row .lp-stage-dot {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+}
+.lp-drawer-body .lp-stage-row .lp-stage-label {
+  font-size: 13px;
+  letter-spacing: -0.005em;
+}
+.lp-drawer-body .lp-stage-row .lp-stage-trace { display: none; }
+.lp-drawer-body .lp-stage-row .lp-stage-dur {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-400);
+}
+
+/* Stats row matches the Objects-list visual weight — three soft pills,
+   no enclosing card. */
+.lp-drawer-body .lp-hero-stats--side {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin-top: 8px;
+  padding: 0;
+  backdrop-filter: none;
+  gap: 6px;
+}
+.lp-drawer-body .lp-stat-compact {
+  padding: 8px 10px;
+  border: 1px solid var(--ink-800);
+  border-radius: 8px;
+  background: rgba(38,21,32,0.4);
+}
+
+/* ─── in-app modal (calibrate, etc.) ────────────────────────── */
+.lp-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,5,8,0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: lp-modal-fade 160ms ease-out;
+}
+@keyframes lp-modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lp-modal {
+  width: 100%;
+  max-width: 460px;
+  border: 1px solid var(--ink-800);
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--ink-900), var(--ink-950));
+  box-shadow:
+    0 30px 80px -20px rgba(0,0,0,0.7),
+    0 0 0 1px rgba(255,157,111,0.18) inset,
+    0 0 60px -20px rgba(255,107,74,0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: lp-modal-rise 220ms cubic-bezier(0.22, 0.85, 0.3, 1);
+}
+@keyframes lp-modal-rise {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.lp-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--ink-800);
+}
+.lp-modal-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--ink-100);
+}
+.lp-modal-title em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--accent-300);
+}
+.lp-modal-sub {
+  margin: 4px 0 0;
+  color: var(--ink-400);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lp-modal-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.lp-modal-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lp-modal-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+}
+.lp-modal-input {
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--ink-700);
+  background: rgba(17,9,14,0.7);
+  color: var(--ink-100);
+  font-family: inherit;
+  font-size: 15px;
+  letter-spacing: -0.005em;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.lp-modal-input:focus {
+  outline: 0;
+  border-color: rgba(255,157,111,0.55);
+  box-shadow: 0 0 0 3px rgba(255,107,74,0.18);
+}
+.lp-modal-hint {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-500);
+  margin: 0;
+}
+.lp-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--ink-800);
+  background: rgba(17,9,14,0.55);
+}
+.lp-modal-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,107,74,0.35);
+  background: rgba(255,107,74,0.10);
+  color: #ffb6a3;
+  font-size: 12.5px;
+}
 
 /* The expanded debug HUD already styles itself via Tailwind; we add a
    close button overlay for symmetry with the collapsed pill. */

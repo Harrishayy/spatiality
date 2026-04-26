@@ -9,7 +9,44 @@ import type {
 
 export const DEMO_SCENE_ID = "demo_bedroom";
 
+/** Self-contained scene served from web/public/demo. Used when R2 / Modal /
+ *  the agent service aren't reachable so the viewer still has something to
+ *  show on a fresh localhost. Scene IDs starting with "_" are reserved for
+ *  this kind of fixture. */
+export const LOCAL_DEMO_SCENE_ID = "_demo_room";
+
+const LOCAL_DEMO_SUMMARY: SceneSummary = {
+  scene_id: LOCAL_DEMO_SCENE_ID,
+  status: "ready",
+  created_at: new Date().toISOString(),
+  stats: { frame_count: 60, object_count: 3, splat_size_mb: 0.26 },
+  total_duration_s: 4.2,
+};
+
+const LOCAL_DEMO_MANIFEST: Manifest = {
+  scene_id: LOCAL_DEMO_SCENE_ID,
+  created_at: LOCAL_DEMO_SUMMARY.created_at!,
+  status: "ready",
+  stages: {
+    capture:      { status: "complete", duration_s: 0.6 },
+    poses:        { status: "complete", duration_s: 1.8, method: "stub", frame_count: 60 },
+    splat:        { status: "complete", duration_s: 0.4, method: "stub", gaussian_count: 17334 },
+    segmentation: { status: "complete", duration_s: 1.4, method: "stub", object_count: 3 },
+  },
+  artifacts: {
+    splat_ply:        "/demo/points.ply",
+    annotations_json: "/demo/annotations.json",
+  },
+  stats: { frame_count: 60, object_count: 3, splat_size_mb: 0.26 },
+  errors: [],
+};
+
+const isLocalDemo = (sceneId: string) => sceneId === LOCAL_DEMO_SCENE_ID;
+
 export function getArtifactUrl(sceneId: string, artifact: string): string {
+  if (isLocalDemo(sceneId)) {
+    return `/demo/${artifact}`;
+  }
   const r2Base = process.env.NEXT_PUBLIC_R2_ARTIFACTS_PUBLIC_BASE;
   const useR2 = r2Base && process.env.NEXT_PUBLIC_DEFAULT_MODE !== "local";
   if (useR2) {
@@ -60,6 +97,7 @@ export async function submitJob(
 }
 
 export async function fetchManifest(sceneId: string): Promise<Manifest> {
+  if (isLocalDemo(sceneId)) return LOCAL_DEMO_MANIFEST;
   const res = await fetch(`/api/jobs/${sceneId}`);
   return unwrap(res, "fetchManifest");
 }
@@ -155,9 +193,19 @@ export interface SceneSummary {
 }
 
 export async function fetchScenes(): Promise<SceneSummary[]> {
-  const res = await fetch("/api/scenes", { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
+  // Always include the bundled local demo so a fresh checkout has at least
+  // one scene to open even if the agent / R2 aren't reachable.
+  let remote: SceneSummary[] = [];
+  try {
+    const res = await fetch("/api/scenes", { cache: "no-store" });
+    if (res.ok) remote = await res.json();
+  } catch {
+    // Agent unreachable — fall through to just the local demo.
+  }
+  const seen = new Set(remote.map((s) => s.scene_id));
+  return seen.has(LOCAL_DEMO_SCENE_ID)
+    ? remote
+    : [LOCAL_DEMO_SUMMARY, ...remote];
 }
 
 export async function fetchGatewayHealth(): Promise<GatewayHealth | null> {

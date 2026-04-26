@@ -52,6 +52,7 @@ import {
 import type { Annotation, Vec3 } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { AnnotationOverlay } from "./AnnotationOverlay";
+import { CalibrateModal } from "./CalibrateModal";
 
 // "end_header\n" — used as a needle in the streaming parser to detect when the
 // PLY ASCII header is fully received and we can transition to body parsing.
@@ -1284,7 +1285,18 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         sph.radius = Math.max(0.05, Math.min(40, sph.radius * factor));
       };
       const onContextMenu = (e: MouseEvent) => e.preventDefault();
+      // True when focus is in a text field — chat input, modal, etc. WASD
+      // and friends would otherwise scroll the camera every time the user
+      // typed an "a" or "s".
+      const isTypingTarget = (e: KeyboardEvent): boolean => {
+        const t = e.target as HTMLElement | null;
+        if (!t) return false;
+        if (t.isContentEditable) return true;
+        const tag = t.tagName;
+        return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      };
       const onKey = (e: KeyboardEvent) => {
+        if (isTypingTarget(e)) return;
         const k = sph.radius * 0.04;
         const right = new Vector3();
         const up = new Vector3();
@@ -1332,7 +1344,13 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
       dom.addEventListener("pointerdown", markDirty);
       window.addEventListener("pointermove", markDirty);
       dom.addEventListener("wheel", markDirty);
-      window.addEventListener("keydown", markDirty);
+      // Skip key-driven redraws when the user is typing in an input — those
+      // keystrokes don't change the camera (see isTypingTarget guard above).
+      const markDirtyKey = (e: KeyboardEvent) => {
+        if (isTypingTarget(e)) return;
+        markDirty();
+      };
+      window.addEventListener("keydown", markDirtyKey);
       window.addEventListener("resize", markDirty);
       // Pause completely when tab is hidden; redraw once when it comes back.
       const onVisibility = () => {
@@ -1563,7 +1581,7 @@ export function SplatViewer({ splatUrl, annotations, emptySplat }: Props) {
         dom.removeEventListener("pointerdown", markDirty);
         window.removeEventListener("pointermove", markDirty);
         dom.removeEventListener("wheel", markDirty);
-        window.removeEventListener("keydown", markDirty);
+        window.removeEventListener("keydown", markDirtyKey);
         window.removeEventListener("resize", markDirty);
         document.removeEventListener("visibilitychange", onVisibility);
         try {
@@ -2219,35 +2237,12 @@ function ViewerToolbar() {
   const cancelMeasurement = useUI((s) => s.cancelMeasurement);
   const displayScale = useUI((s) => s.displayScale);
   const setDisplayScale = useUI((s) => s.setDisplayScale);
-  const calibrateFromLastMeasurement = useUI((s) => s.calibrateFromLastMeasurement);
   const modeLabel =
     renderMode === "depth" ? "Depth" : renderMode === "confidence" ? "Confidence" : "RGB";
 
-  const onCalibrate = () => {
-    const last = measurements[measurements.length - 1];
-    if (!last) {
-      window.alert(
-        "Take a measurement first.\n\nClick Measure, click two points on something of known size (a door is ~80 cm wide; a typical doorway is 2.0 m tall), then come back and hit Calibrate.",
-      );
-      return;
-    }
-    const rawDistance = last.distance; // metres in VGGT-native units
-    const currentDisplayed = rawDistance * displayScale;
-    const input = window.prompt(
-      `Real-world distance for the most recent measurement?\n\n` +
-        `Currently shown: ${currentDisplayed.toFixed(3)} m\n\n` +
-        `Enter the true value in metres (e.g. "0.8" for an 80 cm door):`,
-      currentDisplayed.toFixed(2),
-    );
-    if (input == null) return;
-    const real = parseFloat(input);
-    if (!Number.isFinite(real) || real <= 0) {
-      window.alert("Need a positive number in metres.");
-      return;
-    }
-    calibrateFromLastMeasurement(real);
-  };
+  const [calibrateOpen, setCalibrateOpen] = useState(false);
   return (
+    <>
     <div className="pointer-events-auto absolute left-1/2 top-3 flex -translate-x-1/2 gap-1.5">
       <button
         onClick={cycleRenderMode}
@@ -2302,7 +2297,7 @@ function ViewerToolbar() {
         </button>
       )}
       <button
-        onClick={onCalibrate}
+        onClick={() => setCalibrateOpen(true)}
         className={`rounded-md border px-2.5 py-1 font-mono text-[11px] backdrop-blur ${
           displayScale !== 1
             ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
@@ -2326,6 +2321,8 @@ function ViewerToolbar() {
         </button>
       )}
     </div>
+    <CalibrateModal open={calibrateOpen} onClose={() => setCalibrateOpen(false)} />
+    </>
   );
 }
 

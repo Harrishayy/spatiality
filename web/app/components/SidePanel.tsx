@@ -8,48 +8,122 @@ import { AnnotationEvidencePanel } from "./AnnotationEvidencePanel";
 import { ChatPanel } from "./ChatPanel";
 import { PipelineProgress } from "./PipelineProgress";
 
-interface Props {
+export type SceneSection = "pipeline" | "objects" | "evidence";
+
+interface ColumnProps {
   manifest: Manifest;
   annotations: Annotation[];
   messages: import("@/lib/types").ChatMessage[];
   onSend: (text: string) => void;
   loading: boolean;
-  segStatus: StageStatus;
+  openSection: SceneSection | null;
+  onToggleSection: (s: SceneSection) => void;
 }
 
-export function SidePanel({
+/**
+ * Right-side column on the scenes page: a vertical icon rail (Pipeline /
+ * Objects / Evidence) plus the persistent chat panel. The actual section
+ * content renders in a separate <SceneDrawerOverlay> that floats over the
+ * 3D canvas — this column is what stays put.
+ */
+export function SceneSideColumn({
   manifest,
   annotations,
   messages,
   onSend,
   loading,
+  openSection,
+  onToggleSection,
+}: ColumnProps) {
+  const selectedId = useUI((s) => s.selectedId);
+  const selected =
+    selectedId == null ? null : annotations.find((a) => a.id === selectedId) ?? null;
+
+  return (
+    <aside className="lp-scene-aside">
+      <div className="lp-rail">
+        <RailButton
+          label="Pipeline"
+          icon="◐"
+          active={openSection === "pipeline"}
+          onClick={() => onToggleSection("pipeline")}
+        />
+        <RailButton
+          label="Objects"
+          icon="⊟"
+          badge={annotations.length || undefined}
+          active={openSection === "objects"}
+          onClick={() => onToggleSection("objects")}
+        />
+        <RailButton
+          label="Evidence"
+          icon="◳"
+          active={openSection === "evidence"}
+          disabled={!selected}
+          onClick={() => onToggleSection("evidence")}
+        />
+      </div>
+
+      <div className="lp-chat-column">
+        <div className="lp-chat-column-head">
+          <span className="lp-chat-column-title">
+            Chat <em>ask the scene</em>
+          </span>
+        </div>
+        <div className="lp-chat-column-body">
+          <ChatPanel
+            sceneId={manifest.scene_id}
+            messages={messages}
+            onSend={onSend}
+            disabled={loading}
+          />
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+interface DrawerProps {
+  manifest: Manifest;
+  annotations: Annotation[];
+  segStatus: StageStatus;
+  openSection: SceneSection | null;
+  onClose: () => void;
+}
+
+/**
+ * Floating drawer that slides in from the right edge of the canvas. Renders
+ * the content for the currently-open section (Pipeline / Objects / Evidence)
+ * over the 3D viewer; chat stays untouched in the persistent column.
+ */
+export function SceneDrawerOverlay({
+  manifest,
+  annotations,
   segStatus,
-}: Props) {
+  openSection,
+  onClose,
+}: DrawerProps) {
   const isolatedIds = useUI((s) => s.isolatedIds);
   const clearIsolated = useUI((s) => s.clearIsolated);
   const selectedId = useUI((s) => s.selectedId);
   const selected =
     selectedId == null ? null : annotations.find((a) => a.id === selectedId) ?? null;
 
-  return (
-    <aside className="lp-side md:max-w-sm">
-      <CollapseSection
-        name="Pipeline"
-        accent="live"
-        meta={<span className="lp-collapse-count">{manifest.scene_id}</span>}
-        defaultOpen
-      >
-        <PipelineProgress manifest={manifest} />
-      </CollapseSection>
+  const title =
+    openSection === "pipeline"
+      ? { name: "Pipeline", accent: "live" }
+      : openSection === "objects"
+        ? { name: "Objects", accent: "scene" }
+        : openSection === "evidence"
+          ? { name: "Evidence", accent: selected?.label ?? "" }
+          : null;
 
-      <CollapseSection
-        name="Objects"
-        accent="scene"
-        meta={
-          <span className="lp-collapse-count">{annotations.length}</span>
-        }
-        defaultOpen
-      >
+  let body: ReactNode = null;
+  if (openSection === "pipeline") {
+    body = <PipelineProgress manifest={manifest} />;
+  } else if (openSection === "objects") {
+    body = (
+      <>
         <ObjectsList annotations={annotations} segStatus={segStatus} />
         {isolatedIds.size > 0 && (
           <button
@@ -59,86 +133,87 @@ export function SidePanel({
             ↺ Clear isolation ({isolatedIds.size})
           </button>
         )}
-      </CollapseSection>
+      </>
+    );
+  } else if (openSection === "evidence" && selected) {
+    body = (
+      <AnnotationEvidencePanel
+        sceneId={manifest.scene_id}
+        annotation={selected}
+      />
+    );
+  } else if (openSection === "evidence") {
+    body = (
+      <p className="lp-modal-hint">
+        Click an object marker on the scene (or open the Objects panel) to see
+        its evidence frames here.
+      </p>
+    );
+  }
 
-      {selected && (
-        <CollapseSection
-          name="Evidence"
-          accent={selected.label}
-          defaultOpen
-          flush
+  return (
+    <div
+      className={["lp-drawer", openSection ? "lp-drawer--open" : ""].join(" ")}
+      aria-hidden={!openSection}
+    >
+      <div className="lp-drawer-head">
+        <span className="lp-drawer-title">
+          <span className="lp-drawer-title-name">{title?.name ?? ""}</span>
+          {title?.accent && (
+            <span className="lp-drawer-title-accent">{title.accent}</span>
+          )}
+        </span>
+        <button
+          type="button"
+          className="lp-drawer-close"
+          onClick={onClose}
+          aria-label="Close"
+          title="Close"
         >
-          <AnnotationEvidencePanel
-            sceneId={manifest.scene_id}
-            annotation={selected}
-          />
-        </CollapseSection>
-      )}
-
-      <CollapseSection
-        name="Chat"
-        accent="ask"
-        defaultOpen
-        grow
-        flush
-      >
-        <ChatPanel
-          sceneId={manifest.scene_id}
-          messages={messages}
-          onSend={onSend}
-          disabled={loading}
-        />
-      </CollapseSection>
-    </aside>
+          ×
+        </button>
+      </div>
+      <div className="lp-drawer-body">{body}</div>
+    </div>
   );
 }
 
-interface SectionProps {
-  name: string;
-  accent?: string;
-  meta?: ReactNode;
-  defaultOpen?: boolean;
-  grow?: boolean;
-  flush?: boolean;
-  children: ReactNode;
-}
-
-function CollapseSection({
-  name,
-  accent,
-  meta,
-  defaultOpen,
-  grow,
-  flush,
-  children,
-}: SectionProps) {
+function RailButton({
+  label,
+  icon,
+  badge,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  icon: string;
+  badge?: number;
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
   return (
-    <details
-      open={defaultOpen}
+    <button
+      type="button"
       className={[
-        "lp-collapse",
-        grow ? "lp-collapse--grow" : "",
-        flush ? "lp-collapse--flush" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+        "lp-rail-btn",
+        active ? "lp-rail-btn--on" : "",
+      ].join(" ")}
+      disabled={disabled}
+      onClick={onClick}
+      aria-pressed={active}
+      title={disabled ? `${label} (select an object first)` : label}
+      style={disabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
     >
-      <summary className="lp-collapse-head">
-        <span className="lp-collapse-title">
-          <span className="lp-collapse-title-name">{name}</span>
-          {accent && (
-            <span className="lp-collapse-title-accent">{accent}</span>
-          )}
-        </span>
-        <span className="lp-collapse-meta">
-          {meta}
-          <span className="lp-collapse-chevron" aria-hidden>
-            ▾
-          </span>
-        </span>
-      </summary>
-      <div className="lp-collapse-body">{children}</div>
-    </details>
+      <span className="lp-rail-btn-icon" aria-hidden>
+        {icon}
+      </span>
+      <span className="lp-rail-btn-label">{label}</span>
+      {badge != null && badge > 0 && (
+        <span className="lp-rail-btn-badge">{badge > 99 ? "99+" : badge}</span>
+      )}
+    </button>
   );
 }
 

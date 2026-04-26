@@ -22,7 +22,7 @@ export function useChat(sceneId: string) {
       id: newId(),
       role: "agent",
       text:
-        "Loaded. Ask anything about the scene, or tap **Where am I?** to ground a question to your view.",
+        "Loaded. Ask anything about the scene — try **what's beside the side chair?** to have me look at the frames around an object.",
     },
   ]);
 
@@ -81,9 +81,5 @@ export function useChat(sceneId: string) {
     [sceneId, camera.position],
   );
 
-  const append = useCallback((msg: Omit<ChatMessage, "id">) => {
-    setMessages((m) => [...m, { ...msg, id: newId() }]);
-  }, []);
-
-  return { messages, send, append };
+  return { messages, send };
 }

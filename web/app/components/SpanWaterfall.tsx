@@ -4,7 +4,7 @@
 
 "use client";
 
-import type { TraceTreeNode } from "@/lib/types";
+import { nodeDurationS, type TraceTreeNode } from "@/lib/types";
 
 interface Props {
   /** The root span(s) of the subtree to render — typically the result of
@@ -134,7 +134,7 @@ function Row({
             style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
           />
           <span className="absolute -right-12 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-ink-400">
-            {fmt(node.duration)}
+            {fmt(nodeDurationS(node))}
           </span>
         </div>
       </button>

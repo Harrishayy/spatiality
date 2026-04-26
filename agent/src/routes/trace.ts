@@ -1,7 +1,9 @@
 import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 
+import { getAgentCost } from "../lib/agent-cost.js";
 import {
   aggregateCost,
+  type CostAggregate,
   LogfireReadError,
   spansForScene,
   toTree,
@@ -9,6 +11,34 @@ import {
 } from "../lib/logfire-read.js";
 import { getArtifactJson, putArtifactJson } from "../lib/r2.js";
 import { SCENE_ID_RE } from "../schemas.js";
+
+// Fold per-scene agent-side model usage (chat tool-loop turns recorded by
+// `recordModelCall`) into the Logfire-derived totals so the scenes-page
+// CostBadge reflects everything the user has spent on this scene, not just
+// the segmentation labeler. Returns a new aggregate; doesn't mutate.
+function withAgentCost(sceneId: string, base: CostAggregate): CostAggregate {
+  const a = getAgentCost(sceneId);
+  if (a.call_count === 0) return base;
+  return {
+    total_usd: round6(base.total_usd + a.total_usd),
+    total_tokens_in: base.total_tokens_in + a.total_tokens_in,
+    total_tokens_out: base.total_tokens_out + a.total_tokens_out,
+    call_count: base.call_count + a.call_count,
+    by_span: [
+      ...base.by_span,
+      {
+        span_name: "agent.chat",
+        usd: round6(a.total_usd),
+        tokens_in: a.total_tokens_in,
+        tokens_out: a.total_tokens_out,
+      },
+    ],
+  };
+}
+
+function round6(n: number): number {
+  return Math.round(n * 1_000_000) / 1_000_000;
+}
 
 // Per-scene span-row cache. Both endpoints (`/api/trace/:scene_id` and
 // `/api/trace/:scene_id/cost`) derive from the same Logfire query; share the
@@ -96,7 +126,7 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
           scene_id: sceneId,
           span_count: rows.length,
           tree: toTree(rows),
-          cost: aggregateCost(rows),
+          cost: withAgentCost(sceneId, aggregateCost(rows)),
           source,
         };
       } catch (err) {
@@ -121,7 +151,7 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
       }
       try {
         const { rows } = await getRowsCached(sceneId, request.log);
-        return aggregateCost(rows);
+        return withAgentCost(sceneId, aggregateCost(rows));
       } catch (err) {
         if (err instanceof LogfireReadError) {
           return reply.code(502).send({ error: "logfire read failed" });

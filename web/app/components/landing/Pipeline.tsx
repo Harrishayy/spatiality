@@ -63,7 +63,7 @@ const SPAN_LOG: SpanRow[] = [
   ["58.20", "info", "agent.gateway.label", "via=pydantic-ai/anthropic"],
   ["60.30", "ok", "segment.label.done", "objects=27 dur=11.2s"],
   ["60.31", "ok", "manifest.write", "status=ready"],
-  ["60.32", "ok", "agent.ready", "where_am_i ≤3s"],
+  ["60.32", "ok", "agent.ready", "tools=4 chat≤3s"],
 ];
 
 export function LandingPipeline() {

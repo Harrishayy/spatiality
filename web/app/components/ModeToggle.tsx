@@ -12,15 +12,15 @@ export function ModeToggle() {
       className={`lp-mode-chip ${isLocal ? "" : "lp-mode-chip--on"} inline-flex items-center gap-2`}
       title={
         isLocal
-          ? "Uploads bypass R2 — multipart to agent → Modal Volume"
-          : "Uploads stream to Cloudflare R2 (production path)"
+          ? "Direct upload — multipart to agent → Modal Volume"
+          : "Streamed upload (production path)"
       }
     >
       <span
         className="inline-block size-1.5 rounded-full"
         style={{ background: isLocal ? "var(--hue-amber)" : "var(--emerald)" }}
       />
-      Mode · {isLocal ? "Local" : "R2"}
+      Mode · {isLocal ? "Local" : "Cloud"}
     </button>
   );
 }

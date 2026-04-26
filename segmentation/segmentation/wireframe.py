@@ -37,8 +37,35 @@ from shared.schemas import AnnotationsFile, Range, WireframeIndex
 from .lift_masks import _fast_load
 
 
-VOXEL_SIZE = 0.05            # 5 cm grid for the background downsample
-PER_OBJECT_SAMPLE = 500      # max points emitted per annotation
+# Background uses two voxel sizes so the wireframe reads as a clean
+# scaffold far from objects but stays detailed where it matters.
+#
+#   FAR voxel  : the global "I'm in a room" scaffolding — coarse enough to
+#                hint at walls/floor/ceiling planes without painting a wall
+#                of dots. At 20 cm a 4 m × 3 m × 2.5 m room reduces to a
+#                few thousand background points.
+#   NEAR voxel : a halo zone around each annotation bbox where the cloud
+#                stays denser so the user sees what surrounds the labelled
+#                object (the desk under the laptop, the floor under the
+#                chair, the wall behind the painting). Slightly coarser
+#                than the original uniform 5 cm so the near zone still
+#                reads as a wireframe, not the full point cloud.
+#
+# `HALO_M` is the radius around each annotation bbox that counts as
+# "near". 0.4 m gives a comfortable cushion (ground around a chair, the
+# desk surface around a laptop) without leaking into adjacent objects.
+VOXEL_FAR = 0.20
+VOXEL_NEAR = 0.08
+HALO_M = 0.40
+# Fallback voxel when annotations.json is missing or empty — coarser
+# than NEAR so a pre-segmentation viewer still gets a low-density
+# wireframe rather than confetti.
+VOXEL_DEFAULT = 0.15
+# Max points emitted per annotation. Slight reduction from the original
+# 500 so the wireframe density per object reads as restrained, while
+# still meaningfully denser than the surrounding voxel scaffold (350 dots
+# per object vs. ≤ 1 dot per (8 cm)³ cell nearby).
+PER_OBJECT_SAMPLE = 350
 MATCH_RADIUS = 0.06          # splat→points spatial match radius (m)
 
 
@@ -122,6 +149,40 @@ def _voxel_downsample(
     return xyz[idx], rgb[idx]
 
 
+def _near_object_mask(
+    xyz: np.ndarray, annotations, halo: float
+) -> np.ndarray:
+    """Boolean mask: True for points within `halo` metres of any annotation
+    AABB. Vectorised — for each annotation we expand its bbox by halo on
+    every axis, then OR the per-bbox containment masks.
+
+    Empty `annotations` → all-False (caller voxelises everything as far).
+    """
+    n = xyz.shape[0]
+    if n == 0 or not annotations:
+        return np.zeros(n, dtype=bool)
+    near = np.zeros(n, dtype=bool)
+    for a in annotations:
+        bbox = getattr(a, "bbox", None)
+        if not bbox:
+            continue
+        try:
+            lo = np.asarray(bbox[0], dtype=np.float32) - halo
+            hi = np.asarray(bbox[1], dtype=np.float32) + halo
+        except (TypeError, ValueError):
+            continue
+        inside = (
+            (xyz[:, 0] >= lo[0]) & (xyz[:, 0] <= hi[0])
+            & (xyz[:, 1] >= lo[1]) & (xyz[:, 1] <= hi[1])
+            & (xyz[:, 2] >= lo[2]) & (xyz[:, 2] <= hi[2])
+        )
+        # Short-circuit: once everything is near at least one bbox, stop.
+        np.logical_or(near, inside, out=near)
+        if near.all():
+            break
+    return near
+
+
 def _write_ply(
     path: Path, xyz: np.ndarray, rgb: np.ndarray
 ) -> None:
@@ -179,28 +240,52 @@ def build_wireframe(scene_dir: Path, scene_id: str) -> Path:
             span.set_attribute("skipped", "empty_points")
             return out_ply
 
-        # 1) Voxel-downsampled background.
-        voxel_xyz, voxel_rgb = _voxel_downsample(xyz, rgb, VOXEL_SIZE)
+        # Annotations gate the near/far split: with none we fall back to a
+        # uniform medium voxel for the whole cloud (no "near" zone exists).
+        anns = []
+        if annotations_path.exists():
+            try:
+                anns = AnnotationsFile.read(annotations_path).root
+            except Exception as e:
+                span.set_attribute("annotations_load_error", str(e)[:200])
+        span.set_attribute("annotation_count", len(anns))
+
+        # 1) Background scaffold.
+        #    With annotations: split points into a near-object zone (HALO_M
+        #    around each bbox) and the rest. Voxelise each at a different
+        #    scale so the wireframe reads as sparse-everywhere with a local
+        #    uplift around the labelled objects.
+        #    Without annotations: one uniform medium voxel — keeps the
+        #    pre-segmentation viewer usable.
+        if anns:
+            near_mask = _near_object_mask(xyz, anns, HALO_M)
+            far_xyz, near_xyz = xyz[~near_mask], xyz[near_mask]
+            far_rgb, near_rgb = rgb[~near_mask], rgb[near_mask]
+            far_v_xyz, far_v_rgb = _voxel_downsample(far_xyz, far_rgb, VOXEL_FAR)
+            near_v_xyz, near_v_rgb = _voxel_downsample(near_xyz, near_rgb, VOXEL_NEAR)
+            voxel_xyz = np.concatenate([far_v_xyz, near_v_xyz], axis=0)
+            voxel_rgb = np.concatenate([far_v_rgb, near_v_rgb], axis=0)
+            span.set_attribute("voxel_far_count", int(far_v_xyz.shape[0]))
+            span.set_attribute("voxel_near_count", int(near_v_xyz.shape[0]))
+        else:
+            voxel_xyz, voxel_rgb = _voxel_downsample(xyz, rgb, VOXEL_DEFAULT)
         span.set_attribute("voxel_count", int(voxel_xyz.shape[0]))
 
-        # 2) Per-annotation dense samples — only available when both
-        # splat.ply and annotations.json are present.
+        # 2) Per-annotation dense samples — only available when splat.ply
+        # is also present.
         per_object_xyz_chunks: list[np.ndarray] = []
         per_object_rgb_chunks: list[np.ndarray] = []
         ranges: dict[str, Range] = {}
         offset = int(voxel_xyz.shape[0])
 
-        if splat_path.exists() and annotations_path.exists():
+        if splat_path.exists() and anns:
             try:
                 gaussian_centers, _opacity = _fast_load(splat_path)
             except Exception as e:
                 span.set_attribute("splat_load_error", str(e)[:200])
                 gaussian_centers = np.zeros((0, 3), dtype=np.float32)
 
-            anns = AnnotationsFile.read(annotations_path).root
-            span.set_attribute("annotation_count", len(anns))
-
-            if gaussian_centers.shape[0] > 0 and anns:
+            if gaussian_centers.shape[0] > 0:
                 # KDTree over points.ply lets us turn each annotation's
                 # ``cluster_gaussian_indices`` into a points.ply point
                 # set: query the tree at every Gaussian's center, take
@@ -232,7 +317,12 @@ def build_wireframe(scene_dir: Path, scene_id: str) -> Path:
                     ranges[a.id] = Range(start=offset, end=offset + int(sel.size))
                     offset += int(sel.size)
         else:
-            span.set_attribute("annotations_present", False)
+            # Skip per-object samples either because annotations are absent
+            # or splat.ply isn't there. The scaffold above is still emitted.
+            span.set_attribute(
+                "per_object_skipped",
+                "no_annotations" if not anns else "no_splat",
+            )
 
         # Concatenate voxel + per-object points and write artifacts.
         if per_object_xyz_chunks:

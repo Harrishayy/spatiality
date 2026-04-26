@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { Manifest } from "@/lib/types";
+import { useCost } from "./useCost";
 
 interface Props {
   manifest?: Manifest;
@@ -24,9 +25,35 @@ export function Header({ manifest }: Props) {
         {sceneId && <SceneNameField sceneId={sceneId} />}
       </div>
       <div className="lp-app-header-meta">
+        {sceneId && <CostBadge sceneId={sceneId} status={status} />}
         <StatusBadge status={status} />
       </div>
     </header>
+  );
+}
+
+function CostBadge({
+  sceneId,
+  status,
+}: {
+  sceneId: string;
+  status: Manifest["status"];
+}) {
+  const { data } = useCost(sceneId, status);
+  // Don't render until we've heard back from the trace endpoint with at
+  // least one model call. Avoids the "$0 · CALLS" empty-state flash that
+  // prompted this whole rewrite.
+  if (!data || data.call_count === 0) return null;
+  const usd = data.total_usd;
+  const pretty =
+    usd >= 0.01 ? `$${usd.toFixed(3)}` : usd > 0 ? `$${usd.toFixed(5)}` : "$0";
+  return (
+    <span
+      className="lp-status-pill"
+      title="Total Anthropic spend on this scene — segmentation labeler plus chat."
+    >
+      {pretty} · {data.call_count} call{data.call_count === 1 ? "" : "s"}
+    </span>
   );
 }
 

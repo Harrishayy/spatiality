@@ -91,10 +91,30 @@ export interface TraceTreeNode {
   span_name: string;
   start_timestamp: string;
   end_timestamp: string;
-  duration: number;
+  /** Span wall-clock duration. The agent sends seconds in `duration` —
+   *  `duration_ms` lingers from older builds where milliseconds was the
+   *  only field; both are accepted via `nodeDurationS`. */
+  duration?: number;
+  duration_ms?: number;
   trace_id: string;
   attributes: Record<string, unknown>;
   children: TraceTreeNode[];
+}
+
+/** Resolve a span node's duration in seconds. Returns null when neither
+ *  `duration` (seconds) nor `duration_ms` (milliseconds) is a finite
+ *  number — so the UI can render `—` instead of `NaN s`. */
+export function nodeDurationS(node: {
+  duration?: number;
+  duration_ms?: number;
+}): number | null {
+  if (typeof node.duration === "number" && Number.isFinite(node.duration)) {
+    return node.duration;
+  }
+  if (typeof node.duration_ms === "number" && Number.isFinite(node.duration_ms)) {
+    return node.duration_ms / 1000;
+  }
+  return null;
 }
 
 export interface CostAggregate {

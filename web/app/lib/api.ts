@@ -1,6 +1,7 @@
 import type {
   Annotation,
   ChatMessage,
+  CostAggregate,
   GatewayHealth,
   JobSettings,
   Manifest,
@@ -181,6 +182,14 @@ export async function postChat(params: {
 export async function fetchTrace(sceneId: string): Promise<TraceResponse> {
   const res = await fetch(`/api/trace/${sceneId}`);
   return unwrap(res, "fetchTrace");
+}
+
+/** Lightweight per-scene cost — same backend cache as `fetchTrace`, just
+ *  the aggregated dollar / token / call totals. Drives the header
+ *  CostBadge so it can refresh without pulling the full span tree. */
+export async function fetchCost(sceneId: string): Promise<CostAggregate> {
+  const res = await fetch(`/api/trace/${sceneId}/cost`);
+  return unwrap(res, "fetchCost");
 }
 
 export interface SceneSummary {

@@ -12,7 +12,6 @@ import {
   type SceneSection,
 } from "@/components/SidePanel";
 import { StageDrawer } from "@/components/StageDrawer";
-import { WhereAmIButton } from "@/components/WhereAmIButton";
 import { useChat } from "@/hooks/useChat";
 import { useScene } from "@/hooks/useScene";
 import { DEMO_SCENE_ID } from "@/lib/api";
@@ -28,7 +27,7 @@ export default function ScenePage() {
   const params = useParams<{ id: string }>();
   const sceneId = params?.id ?? DEMO_SCENE_ID;
   const { manifest, annotations, splatUrl, splatReady, segReady } = useScene(sceneId);
-  const { messages, send, append } = useChat(sceneId);
+  const { messages, send } = useChat(sceneId);
   const selectedId = useUI((s) => s.selectedId);
   const [openSection, setOpenSection] = useState<SceneSection | null>(null);
 
@@ -64,20 +63,6 @@ export default function ScenePage() {
           ) : (
             <PipelinePending manifest={m} failed={failed} />
           )}
-
-          <div className="pointer-events-none absolute inset-x-0 bottom-3 flex items-center justify-center gap-2 px-3">
-            {splatReady && (
-              <div className="pointer-events-auto">
-                <WhereAmIButton
-                  sceneId={sceneId}
-                  annotations={annos}
-                  onAnswer={(text) =>
-                    append({ role: "agent", text: `📍 ${text}` })
-                  }
-                />
-              </div>
-            )}
-          </div>
 
           {splatReady && !segReady && segStatus !== "failed" && (
             <SegmentingBanner status={segStatus} />

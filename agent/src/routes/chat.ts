@@ -12,6 +12,7 @@ import type { FastifyPluginAsync } from "fastify";
 import type { MessageParam, ToolUnion } from "@anthropic-ai/sdk/resources/messages.js";
 import { z } from "zod";
 
+import { recordModelCall } from "../lib/agent-cost.js";
 import { anthropicClient } from "../lib/gateway.js";
 import {
   type AnnotationLite,
@@ -262,6 +263,16 @@ export const chatRoute: FastifyPluginAsync = async (app) => {
         request.log.error({ err }, "anthropic call failed");
         return reply.code(502).send({ error: "model call failed" });
       }
+
+      // Record the call for the scene-page CostBadge. Failures here must not
+      // affect the chat response, so the helper is intentionally synchronous
+      // and exception-free.
+      recordModelCall({
+        scene_id: body.scene_id,
+        model: MODEL,
+        tokens_in: resp.usage?.input_tokens ?? 0,
+        tokens_out: resp.usage?.output_tokens ?? 0,
+      });
 
       const toolUses = resp.content.filter((b) => b.type === "tool_use");
       const textBlocks = resp.content.filter((b) => b.type === "text");

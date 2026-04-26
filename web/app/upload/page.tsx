@@ -130,7 +130,7 @@ export default function UploadPage() {
               : state.status === "uploading"
                 ? `Uploading ${(state.progress * 100).toFixed(0)}%`
                 : state.status === "done"
-                  ? `Start pipeline · ${mode === "local" ? "Modal" : "R2"}`
+                  ? "Start pipeline"
                   : "Pick a video first"}
           </button>
           {submitError && (

@@ -50,12 +50,32 @@ def configure_logfire(service: str) -> None:
     """Configure Logfire for a pipeline service.
 
     No-op (local-only) if no Pydantic token is in env, so dev runs work offline.
+
+    Also enables `logfire.instrument_anthropic()` once the SDK is configured.
+    The instrumentation hooks every `messages.create` call across the codebase
+    (segmentation labeler, segmentation proposer, agent chat / locate routes
+    if/when they share this module) so each call emits a span carrying the
+    canonical `gen_ai.usage.cost`, `gen_ai.usage.input_tokens` and
+    `gen_ai.usage.output_tokens` attributes that the agent-side
+    `aggregateCost` / scenes-page CostBadge keys off.
+
+    Best-effort: if the Anthropic SDK isn't installed in this service's image,
+    skip silently rather than refusing to configure observability at all.
     """
     token = _pydantic_token()
     if not token:
         logfire.configure(send_to_logfire=False, service_name=service)
-        return
-    logfire.configure(token=token, service_name=service)
+    else:
+        logfire.configure(token=token, service_name=service)
+
+    try:
+        logfire.instrument_anthropic()
+    except Exception:
+        # Either anthropic isn't importable in this service or the
+        # instrumentation API moved — neither should block the service from
+        # starting. The hand-rolled `est_cost_usd` / `input_tokens` attrs
+        # remain a backstop in segmentation/vlm.py.
+        pass
 
 
 def attach_payload(span, key: str, payload: Any) -> None:

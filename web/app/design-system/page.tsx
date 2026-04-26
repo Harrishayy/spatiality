@@ -307,8 +307,8 @@ const BODY = String.raw`
       <div class="ds-section-head"><span class="ds-section-id">13</span><h2 class="ds-section-title">Chat bubbles</h2></div>
       <div class="ds-example">
         <div class="ds-example-canvas ds-example-canvas--col" style="background:var(--ink-900);">
-          <div class="lp-bubble lp-bubble--user" style="align-self:flex-end"><div class="lp-bubble-text">where am I right now?</div><div class="lp-bubble-meta lp-mono">cam · (1.20, 1.65, 2.40)</div></div>
-          <div class="lp-bubble lp-bubble--agent"><div class="lp-bubble-text">You're in the centre of the living room, facing north. The grey couch is 1.2m to your left.</div><div class="lp-bubble-meta lp-mono">haiku-4-5 · 1.94s · 3 nearby</div></div>
+          <div class="lp-bubble lp-bubble--user" style="align-self:flex-end"><div class="lp-bubble-text">what's beside the side chair?</div><div class="lp-bubble-meta lp-mono">scene · room.001</div></div>
+          <div class="lp-bubble lp-bubble--agent"><div class="lp-bubble-text">A low table sits to its right, with a table lamp resting on top.</div><div class="lp-bubble-meta lp-mono">haiku-4-5 · 1.94s · 3 frames</div></div>
         </div>
         <div class="ds-example-foot"><strong>&lt;Bubble role="user|agent" meta={…} /&gt;</strong><span>.lp-bubble--user · .lp-bubble--agent</span></div>
       </div>
@@ -330,7 +330,7 @@ const BODY = String.raw`
     <!-- 14a APP SURFACE -->
     <section id="app-surface" class="ds-section">
       <div class="ds-section-head"><span class="ds-section-id">14a</span><h2 class="ds-section-title">App surface (in-viewer)</h2></div>
-      <p class="ds-section-sub">Primitives shared by the in-app viewer at <code>/scenes/[id]</code>: app header, side panel, refined chat shell, banners, anno pills, where-am-I.</p>
+      <p class="ds-section-sub">Primitives shared by the in-app viewer at <code>/scenes/[id]</code>: app header, side panel, refined chat shell, banners, anno pills.</p>
 
       <div class="ds-example">
         <div class="ds-example-canvas" style="padding:0;background:#1a0e14;">
@@ -390,9 +390,8 @@ const BODY = String.raw`
         <div class="ds-example-canvas" style="background:#1a0e14;height:140px;position:relative;">
           <div style="position:absolute;left:30%;top:40%;"><button class="lp-anno-pill"><span class="lp-anno-pill-dot" style="background:#ff9d6f"></span><span class="lp-anno-pill-id">#001</span><span>beige curtain</span><span class="lp-anno-pill-conf">86%</span></button></div>
           <div style="position:absolute;left:30%;top:75%;"><button class="lp-anno-pill lp-anno-pill--selected"><span class="lp-anno-pill-dot" style="background:#8b5fa8"></span><span class="lp-anno-pill-id">#003</span><span>black office chair</span><span class="lp-anno-pill-conf">92%</span></button></div>
-          <div style="position:absolute;left:62%;top:55%;"><button class="lp-where-btn"><span class="lp-where"><span class="lp-where-pulse"></span></span><span>Where am I?</span></button></div>
         </div>
-        <div class="ds-example-foot"><strong>.lp-anno-pill / .lp-where-btn</strong><span>3D-anchored billboards + locate CTA</span></div>
+        <div class="ds-example-foot"><strong>.lp-anno-pill</strong><span>3D-anchored billboards</span></div>
       </div>
     </section>
 

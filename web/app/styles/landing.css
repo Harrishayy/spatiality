@@ -583,17 +583,6 @@ button { font: inherit; }
 }
 .lp-anno-pill-conf { font-family: var(--sans); font-size: 11px; color: var(--ink-500); }
 
-/* Where-am-I — calmer pill */
-.lp-where-btn {
-  background: var(--accent-500);
-  box-shadow: var(--shadow-soft);
-}
-.lp-where-btn:hover:not(:disabled) {
-  background: var(--accent-400);
-  box-shadow: var(--shadow-soft);
-  transform: translateY(-1px);
-}
-
 /* Primary action — refined coral pill, no neon halo */
 .lp-cta {
   display: inline-flex;
@@ -1256,22 +1245,6 @@ button { font: inherit; }
   border-color: var(--accent-400);
   color: var(--accent-300);
   background: rgba(255,107,74,0.18);
-}
-
-.lp-where {
-  position: relative;
-  padding-left: 14px;
-}
-.lp-where-pulse {
-  width: 8px; height: 8px;
-  border-radius: 999px;
-  background: var(--accent-400);
-  box-shadow: 0 0 0 0 rgba(255,157,111,0.7);
-  animation: lp-where-pulse 1.6s ease-out infinite;
-}
-@keyframes lp-where-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255,157,111,0.7); }
-  100% { box-shadow: 0 0 0 14px rgba(255,157,111,0); }
 }
 
 .lp-pin {
@@ -2162,39 +2135,6 @@ button { font: inherit; }
   font-variant-numeric: tabular-nums;
   color: var(--ink-400);
 }
-
-/* "Where am I?" coral pill — replaces ad-hoc box-shadow that was off-palette */
-.lp-where-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px 10px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,157,111,0.45);
-  background: linear-gradient(135deg, var(--accent-500) 0%, #ffb347 100%);
-  color: var(--ink-950);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
-  cursor: pointer;
-  box-shadow: 0 0 24px rgba(255,107,74,0.45), inset 0 0 0 1px rgba(255,255,255,0.18);
-  transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
-}
-.lp-where-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 0 30px rgba(255,107,74,0.65), inset 0 0 0 1px rgba(255,255,255,0.28);
-}
-.lp-where-btn:disabled { opacity: 0.6; cursor: progress; }
-.lp-where-btn .lp-where-pulse {
-  background: rgba(26,14,20,0.95);
-  box-shadow: 0 0 0 0 rgba(26,14,20,0.6);
-  animation: lp-where-pulse-dark 1.6s ease-out infinite;
-}
-@keyframes lp-where-pulse-dark {
-  0%   { box-shadow: 0 0 0 0 rgba(26,14,20,0.6); }
-  100% { box-shadow: 0 0 0 12px rgba(26,14,20,0); }
-}
-.lp-where-btn .lp-where { padding-left: 0; line-height: 0; }
 
 /* Evidence panel tiles */
 .lp-evidence-grid {
@@ -3098,3 +3038,81 @@ button { font: inherit; }
 .lp-demos-logs-body .lp-log-time { color: var(--accent-300); }
 .lp-demos-logs-body .lp-log-name { color: var(--ink-100); white-space: pre; }
 .lp-demos-logs-body .lp-log-meta { color: var(--ink-500); justify-self: end; }
+
+/* ─── Mobile (≤ 720px) ───────────────────────────────────────────
+   Pragmatic small-screen pass. Tightens the landing chrome and
+   collapses the scene-page side rail + chat column (which sum to
+   428px of fixed width and leave nothing for the 3D canvas on a
+   phone) into a compact bottom bar with the rail still usable.
+   The drawer overlay already scales via `min(360px, calc(100% - 24px))`. */
+@media (max-width: 720px) {
+  /* Section paddings — recover vertical room */
+  .lp-section { padding: 60px 18px; }
+  .lp-section-head { margin-bottom: 28px; }
+  .lp-section-title { font-size: clamp(28px, 7vw, 40px); }
+  .lp-cta-sec { padding-top: 28px; padding-bottom: 48px; }
+
+  /* Hero — tighter padding, smaller title floor */
+  .lp-hero { padding: 48px 16px 64px; min-height: auto; }
+  .lp-hero-title { font-size: clamp(40px, 9vw, 60px); }
+  .lp-hero-sub { font-size: 15px; }
+  .lp-hero-cta { gap: 10px; }
+  .lp-hero-stats { margin-top: 18px; }
+
+  /* App header (scenes page) — drop the brand subtitle and the
+     center scene-name input; let the brand + status pill breathe */
+  .lp-app-header {
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+  .lp-app-header-center { display: none; }
+  .lp-app-brand-id { display: none; }
+  .lp-app-brand-title { font-size: 15.5px; }
+
+  /* Scene aside — column-flip so the rail anchors to the bottom and
+     the chat column collapses (drawer overlays still cover the canvas) */
+  .lp-scene-aside {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: auto;
+    width: 100%;
+    flex-direction: column-reverse;
+    z-index: 35;
+    pointer-events: none;
+  }
+  .lp-scene-aside > * { pointer-events: auto; }
+  .lp-rail {
+    flex-direction: row;
+    width: 100%;
+    gap: 6px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-left: 0;
+    border-right: 0;
+    border-top: 1px solid var(--ink-800);
+    background: linear-gradient(180deg, rgba(38,21,32,0.94), rgba(17,9,14,0.94));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    justify-content: space-around;
+  }
+  .lp-rail-btn {
+    width: auto;
+    flex: 1 1 0;
+    flex-direction: row;
+    gap: 6px;
+    padding: 9px 10px;
+  }
+  .lp-rail-btn-icon { font-size: 18px; }
+  .lp-rail-btn-label { font-size: 10px; letter-spacing: 0.10em; }
+  .lp-rail-divider { display: none; }
+  /* Chat column off-canvas on phones — Pipeline / Objects / Evidence
+     remain reachable via the drawer; chat returns above ≥720px */
+  .lp-chat-column { display: none; }
+
+  /* Drawer — leave a small canvas peek and clear of the bottom rail */
+  .lp-drawer {
+    width: 100%;
+    bottom: 64px;
+    border-left: 0;
+  }
+}

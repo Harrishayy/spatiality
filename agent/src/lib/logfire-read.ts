@@ -16,10 +16,14 @@ export class LogfireReadError extends Error {
 export interface SpanRow {
   span_id: string;
   parent_span_id: string | null;
+  trace_id: string;
   span_name: string;
   start_timestamp: string;
   end_timestamp: string | null;
   duration_ms: number;
+  /** Convenience field — `duration_ms / 1000`. Frontend prefers this; we
+   *  keep `duration_ms` too for older clients. */
+  duration: number;
   attributes: Record<string, unknown>;
   level: string | null;
 }
@@ -37,6 +41,9 @@ export interface CostByName {
 
 export interface CostAggregate {
   total_usd: number;
+  /** Number of model calls aggregated into the totals. The frontend's
+   *  CostBadge surfaces this as "N calls" alongside the dollar figure. */
+  call_count: number;
   total_tokens_in: number;
   total_tokens_out: number;
   by_span: CostByName[];
@@ -47,8 +54,9 @@ export async function spansForScene(sceneId: string): Promise<SpanRow[]> {
   // sceneId is route-validated against /^[A-Za-z0-9_-]{1,64}$/, so the
   // single-quote escape below is belt-and-braces.
   const safe = sceneId.replace(/'/g, "''");
-  const sql = `SELECT span_id, parent_span_id, span_name, start_timestamp, end_timestamp,
+  const sql = `SELECT span_id, parent_span_id, trace_id, span_name, start_timestamp, end_timestamp,
        EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) * 1000 AS duration_ms,
+       EXTRACT(EPOCH FROM (end_timestamp - start_timestamp)) AS duration,
        attributes, level
 FROM records
 WHERE attributes->>'scene_id' = '${safe}'
@@ -95,12 +103,23 @@ export function aggregateCost(rows: SpanRow[]): CostAggregate {
   let totalUsd = 0;
   let totalIn = 0;
   let totalOut = 0;
+  let callCount = 0;
   for (const r of rows) {
     const a = (r.attributes ?? {}) as Record<string, unknown>;
-    const usd = num(a["gen_ai.usage.cost"] ?? a["cost_usd"] ?? a["usage.cost"]);
+    // `gen_ai.usage.cost` is what `logfire.instrument_anthropic()` writes;
+    // the older snake_case keys are what segmentation/vlm.py and the agent
+    // chat span attach by hand. `est_cost_usd` is the segmentation labeler's
+    // backstop estimate (used when the gateway hasn't auto-tagged the call).
+    const usd = num(
+      a["gen_ai.usage.cost"] ??
+        a["cost_usd"] ??
+        a["usage.cost"] ??
+        a["est_cost_usd"],
+    );
     const tin = num(a["gen_ai.usage.input_tokens"] ?? a["tokens_in"] ?? a["input_tokens"]);
     const tout = num(a["gen_ai.usage.output_tokens"] ?? a["tokens_out"] ?? a["output_tokens"]);
     if (!usd && !tin && !tout) continue;
+    callCount += 1;
     const cur = bySpan.get(r.span_name) ?? { usd: 0, tokens_in: 0, tokens_out: 0 };
     cur.usd += usd;
     cur.tokens_in += tin;
@@ -112,6 +131,7 @@ export function aggregateCost(rows: SpanRow[]): CostAggregate {
   }
   return {
     total_usd: round(totalUsd),
+    call_count: callCount,
     total_tokens_in: totalIn,
     total_tokens_out: totalOut,
     by_span: [...bySpan.entries()].map(([span_name, v]) => ({

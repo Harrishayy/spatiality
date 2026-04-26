@@ -14,7 +14,11 @@ import { useEffect, useMemo, useState } from "react";
 import { SpanWaterfall } from "./SpanWaterfall";
 import { VlmOutputCard } from "./VlmOutputCard";
 import { useTrace } from "./useTrace";
-import type { ManifestStatus, TraceTreeNode } from "@/lib/types";
+import {
+  nodeDurationS,
+  type ManifestStatus,
+  type TraceTreeNode,
+} from "@/lib/types";
 import { useUI, type DrillStage } from "@/store/ui";
 
 const STAGE_TITLE: Record<DrillStage, string> = {
@@ -35,8 +39,10 @@ function logfireSceneUrl(sceneId: string): string | null {
   return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(sql)}`;
 }
 
-function logfireSpanUrl(traceId: string): string | null {
-  if (!LOGFIRE_PROJECT_URL) return null;
+function logfireSpanUrl(traceId: string | undefined): string | null {
+  // Older agent builds don't return trace_id; without it the per-span deep
+  // link is unconstructable. Skip rather than crash on undefined.replace().
+  if (!LOGFIRE_PROJECT_URL || !traceId) return null;
   return `${LOGFIRE_PROJECT_URL}?q=${encodeURIComponent(`SELECT span_id FROM records WHERE trace_id = '${traceId.replace(/'/g, "''")}'`)}`;
 }
 
@@ -211,13 +217,14 @@ function CostBadge({
 
 function SpanDetail({ node, sceneId }: { node: TraceTreeNode; sceneId: string }) {
   const lfUrl = logfireSpanUrl(node.trace_id);
+  const durSec = nodeDurationS(node);
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-ink-100">{node.span_name}</h3>
           <p className="mt-1 font-mono text-[10px] text-ink-500">
-            {Number.isFinite(node.duration) ? `${node.duration.toFixed(3)}s` : "—"}
+            {durSec != null ? `${durSec.toFixed(3)}s` : "—"}
             {" · "}
             {node.start_timestamp.replace("T", " ").replace("Z", "")}
           </p>

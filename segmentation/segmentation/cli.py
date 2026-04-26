@@ -120,6 +120,21 @@ def main() -> None:
         mask_count = 0
         cluster_count = len(annotations.root)
 
+    # Build the wireframe artifact (viewer's Wireframe view mode). Done
+    # post-annotations so the per-object dense-point sets can be derived
+    # from each annotation's cluster_gaussian_indices. Best-effort: a
+    # missing points.ply just skips the artifact.
+    try:
+        from . import wireframe as _wireframe
+
+        _wireframe.build_wireframe(scene, args.scene_id)
+    except Exception as e:  # noqa: BLE001 — telemetry-only, do not fail the pipeline
+        logfire.warn(
+            "wireframe build failed",
+            scene_id=args.scene_id,
+            error=str(e)[:200],
+        )
+
     total = sam_dur + vlm_dur
     manifest = Manifest.read(manifest_path)
     manifest.stages.segmentation.status = "complete"

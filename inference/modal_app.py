@@ -1151,7 +1151,7 @@ image_cad = (
     # Add only if a runtime ImportError demands it.
     .apt_install("libjpeg-dev")
     .run_commands(
-        "git clone https://github.com/microsoft/TRELLIS.2.git /opt/trellis2",
+        "git clone --recursive https://github.com/microsoft/TRELLIS.2.git /opt/trellis2",
     )
     .pip_install(
         "torch==2.6.0",

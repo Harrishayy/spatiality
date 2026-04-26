@@ -1,8 +1,6 @@
 """Lift 2D SAM masks to 3D Gaussian clusters.
 
-Spec (plans/modules/03_segmentation.md) prefers mask co-occurrence across
-frames. We use a simpler, more robust pipeline that the spec explicitly
-allows as a fallback and treats as the v0:
+We use a simple, robust pipeline as the v0 (mask co-occurrence is a follow-up):
 
 1. DBSCAN on Gaussian centers -> N spatial clusters.
 2. For each cluster, project its centroid into every keyframe and find

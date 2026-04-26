@@ -1,6 +1,6 @@
 """Annotation schema — labeled objects in a scene.
 
-Mirror in shared/types/annotations.ts. Spec: plans/modules/05_storage.md.
+Mirror in shared/types/annotations.ts.
 """
 
 from __future__ import annotations

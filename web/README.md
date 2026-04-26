@@ -1,8 +1,8 @@
-# /web — Glasses → 3D Twin viewer
+# /web — Spatiality 3D mesh viewer
 
 Next.js 16 (App Router) + React 18 + TypeScript strict + Three.js + `@mkkellogg/gaussian-splats-3d` + Tailwind.
 
-Spec: [`../plans/modules/06_web.md`](../plans/modules/06_web.md). Schema mirror lives at [`app/lib/types.ts`](./app/lib/types.ts) — keep in sync with `shared/shared/schemas/*.py`.
+Schema mirror lives at [`app/lib/types.ts`](./app/lib/types.ts) — keep in sync with `shared/shared/schemas/*.py`.
 
 ## What ships out of the box
 
@@ -44,8 +44,8 @@ pnpm start
 
 ## File contracts (read; don't drift)
 
-- `manifest.json` — schema in [`../plans/modules/05_storage.md`](../plans/modules/05_storage.md)
-- `annotations.json` — same spec; rendered as billboards
+- `manifest.json` — schema in [`../shared/shared/schemas/manifest.py`](../shared/shared/schemas/manifest.py)
+- `annotations.json` — schema in [`../shared/shared/schemas/annotations.py`](../shared/shared/schemas/annotations.py); rendered as billboards
 - `splat.ply` — fetched URL passed to `gaussian-splats-3d`'s `addSplatScene`
 
 ## What's NOT in here (per spec)

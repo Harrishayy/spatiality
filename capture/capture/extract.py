@@ -1,6 +1,5 @@
 """Real frame extraction via ffmpeg + ffprobe.
 
-Spec: plans/modules/01_capture.md.
 Idempotent: clears prior frames/ before re-extracting.
 """
 

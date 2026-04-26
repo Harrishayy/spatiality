@@ -1,6 +1,6 @@
 // /api/agent/chat — multimodal chat about a 3D scene.
 //
-// Tool-use loop with four tools (per plans/modules/07_agent.md):
+// Tool-use loop with four tools:
 //   - get_frames_for_object: fetches up to 4 keyframes where an object
 //     appears and feeds them back as image content for visual reasoning
 //     (e.g. "what's next to Stitch?" → looks at Stitch's frames → "a penguin").

@@ -1,6 +1,5 @@
 """SAM 3.1 grounded mask generation on keyframes.
 
-Spec: plans/modules/03_segmentation.md.
 - Pick keyframes evenly distributed by camera arc length (cameras.json).
 - Run SAM 3.1 with a small list of generic text prompts per keyframe; collect
   all masks above the confidence threshold; per-frame IoU-dedup.

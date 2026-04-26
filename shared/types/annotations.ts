@@ -1,5 +1,4 @@
 // MIRROR OF shared/shared/schemas/annotations.py — keep in sync.
-// Spec: plans/modules/05_storage.md.
 
 export type Vec3 = [number, number, number];
 export type BBox = [Vec3, Vec3];

@@ -1,6 +1,6 @@
 """Manifest schema — single source of truth for scene state.
 
-Mirror in shared/types/manifest.ts. Spec: plans/modules/05_storage.md.
+Mirror in shared/types/manifest.ts.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ class Stages(BaseModel):
     poses: Stage
     splat: Stage
     segmentation: Stage
-    cad_export: Stage = Stage(status="pending")
 
 
 class Artifacts(BaseModel):
@@ -36,16 +35,12 @@ class Artifacts(BaseModel):
     annotations_json: str
     thumbnail_jpg: str
     cameras_json: str
-    cad_scene_3mf: str | None = None
-    cad_objects_dir: str | None = None
 
 
 class Stats(BaseModel):
     frame_count: int
     object_count: int
     splat_size_mb: float
-    cad_object_count: int = 0
-    cad_total_face_count: int = 0
 
 
 class Manifest(BaseModel):

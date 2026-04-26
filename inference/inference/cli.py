@@ -1,9 +1,9 @@
 """Inference orchestration — runs the poses + splat stages.
 
-Real path: VGGT → per-pixel surfel synthesis → INRIA-format splat PLY
-(plans/modules/02_inference.md). No per-scene optimisation; all the
-geometric work happens in poses.py while the depth grid is still in
-memory, splat.py only voxel-downsamples the cached surfels.
+Real path: VGGT → per-pixel surfel synthesis → INRIA-format splat PLY.
+No per-scene optimisation; all the geometric work happens in poses.py
+while the depth grid is still in memory, splat.py only voxel-downsamples
+the cached surfels.
 
 Stub path: writes empty cameras.json + empty PLYs (used for local
 dry-runs without CUDA).

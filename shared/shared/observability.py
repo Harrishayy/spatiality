@@ -1,7 +1,7 @@
 """Logfire wiring + canonical span names.
 
-Span names are demo evidence — see plans/modules/08_observability.md table.
-Always import the constants here; never inline span name strings.
+Span names are demo evidence. Always import the constants here; never inline
+span name strings.
 """
 
 from __future__ import annotations
@@ -29,15 +29,7 @@ SPAN_AGENT_CHAT_TOOL = "agent.chat.tool"
 SPAN_MODAL_PROCESS_VIDEO = "modal.process_video"
 SPAN_MODAL_RUN_INFERENCE = "modal.run_inference"
 SPAN_MODAL_RUN_SEGMENTATION = "modal.run_segmentation"
-SPAN_MODAL_RUN_CAD_EXPORT = "modal.run_cad_export"
 SPAN_MODAL_PREPARE_SCENE = "modal.prepare_scene"
-
-# CAD export pipeline (module 11). Spec: 11_cad_export.md.
-SPAN_CAD_VIEWS = "cad_export.views"
-SPAN_CAD_GENERATE = "cad_export.generate"
-SPAN_CAD_REGISTER = "cad_export.register"
-SPAN_CAD_FALLBACK = "cad_export.fallback"
-SPAN_CAD_ASSEMBLE = "cad_export.assemble"
 
 # Wireframe build (segmentation post-step). Produces wireframe.ply +
 # wireframe_index.json for the viewer's Wireframe view mode.
@@ -48,9 +40,8 @@ _PAYLOAD_LIMIT = 16_000  # bytes; OTLP attribute limit is generous but bounded.
 
 
 def _pydantic_token() -> str | None:
-    """Resolve the Pydantic token. Per 08_observability.md the same pylf_v...
-    token doubles as Logfire trace auth and Gateway proxy auth, so we accept
-    either var name.
+    """Resolve the Pydantic token. The same pylf_v... token doubles as Logfire
+    trace auth and Gateway proxy auth, so we accept either var name.
     """
     return os.environ.get("LOGFIRE_TOKEN") or os.environ.get("PYDANTIC_API_KEY")
 

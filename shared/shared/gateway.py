@@ -1,6 +1,6 @@
 """Single source of truth for Pydantic AI Gateway client construction.
 
-Hard rule from CLAUDE.md / plans/modules/07_agent.md:
+Hard rule from CLAUDE.md:
     Every model call in this project routes through Pydantic AI Gateway.
     Anthropic SDK uses `auth_token` (Bearer header), NOT `api_key`.
     Base URL is https://gateway-eu.pydantic.dev/proxy/anthropic/.

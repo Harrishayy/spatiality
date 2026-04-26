@@ -1,7 +1,5 @@
 """VGGT pose + per-pixel surfel synthesis.
 
-Spec: plans/modules/02_inference.md.
-
 This stage replaces the previous "VGGT pose-only" path. Per-scene gsplat
 training is gone; instead we use VGGT's `depth_head` + `camera_head` to
 synthesize anisotropic surface-aligned Gaussians directly from the

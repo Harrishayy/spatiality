@@ -1,7 +1,4 @@
-"""Capture schema — per-scene capture metadata written by /capture.
-
-Spec: plans/modules/01_capture.md (camera presets) + plans/modules/05_storage.md.
-"""
+"""Capture schema — per-scene capture metadata written by /capture."""
 
 from __future__ import annotations
 

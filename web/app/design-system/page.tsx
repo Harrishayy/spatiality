@@ -60,7 +60,7 @@ const BODY = String.raw`
         <div class="ds-principle"><div class="ds-principle-num">02</div><div class="ds-principle-title">Show the data</div><p class="ds-principle-body">Frame counts, durations, span names, file paths are first-class. Monospace is the voice of the product.</p></div>
         <div class="ds-principle"><div class="ds-principle-num">03</div><div class="ds-principle-title">Editorial moments</div><p class="ds-principle-body">One serif headline per surface. The rest is sans. Italic in serif means accent — never bold serif.</p></div>
         <div class="ds-principle"><div class="ds-principle-num">04</div><div class="ds-principle-title">3D is the hero</div><p class="ds-principle-body">Real geometry over decoration. SVG is fine for product chrome, but anything that should feel "twin" lives in Three.js.</p></div>
-        <div class="ds-principle"><div class="ds-principle-num">05</div><div class="ds-principle-title">Modules > pages</div><p class="ds-principle-body">Every UI region maps to a swappable component. No God-files. Filenames mirror module names from <code>plans/modules/</code>.</p></div>
+        <div class="ds-principle"><div class="ds-principle-num">05</div><div class="ds-principle-title">Modules > pages</div><p class="ds-principle-body">Every UI region maps to a swappable component. No God-files. One feature per file.</p></div>
         <div class="ds-principle"><div class="ds-principle-num">06</div><div class="ds-principle-title">Don't fight the existing app</div><p class="ds-principle-body">Class names, ink scale, accent ramp and stage labels match what's already in <code>web/app/components/</code>. Refactor in place; don't fork.</p></div>
       </div>
     </section>
@@ -115,7 +115,7 @@ const BODY = String.raw`
       <div class="ds-type-row"><div class="ds-type-meta"><strong>Display / serif</strong><br/>Fraunces · 300 · -2.5%<br/>96 / 0.98<br/><em>italic = accent/300</em></div><div class="ds-type-sample lp-serif" style="font-size:64px;line-height:1;">Walk through <em style="font-style:italic;color:var(--accent-300)">your room.</em></div></div>
       <div class="ds-type-row"><div class="ds-type-meta"><strong>Section title</strong><br/>Fraunces · 300<br/>40 / 1.02</div><div class="ds-type-sample lp-serif" style="font-size:36px;line-height:1.05;">From video to twin in ~90s.</div></div>
       <div class="ds-type-row"><div class="ds-type-meta"><strong>UI title</strong><br/>Inter · 600<br/>15 / 1.2</div><div class="ds-type-sample" style="font-size:15px;font-weight:600;">Reconstruction (VGGT)</div></div>
-      <div class="ds-type-row"><div class="ds-type-meta"><strong>Body</strong><br/>Inter · 400<br/>14.5 / 1.55<br/>color: ink/300</div><div class="ds-type-sample" style="font-size:14.5px;color:var(--ink-300);max-width:520px;">Capture with Ray-Ban glasses. Reconstruct in seconds. Ask the room where you are — and what you're looking at.</div></div>
+      <div class="ds-type-row"><div class="ds-type-meta"><strong>Body</strong><br/>Inter · 400<br/>14.5 / 1.55<br/>color: ink/300</div><div class="ds-type-sample" style="font-size:14.5px;color:var(--ink-300);max-width:520px;">Any camera in, measurable 3D mesh out. Reconstruct in seconds. Ask the room where you are — and what you're looking at.</div></div>
       <div class="ds-type-row"><div class="ds-type-meta"><strong>Caption / mono</strong><br/>ui-monospace · 11<br/>tracking 0.04em<br/>color: ink/500</div><div class="ds-type-sample lp-mono lp-muted" style="font-size:11px;">artifacts/scenes/living_room_03/ · 60.3s</div></div>
       <div class="ds-type-row"><div class="ds-type-meta"><strong>Eyebrow</strong><br/>ui-monospace · 10<br/>UPPERCASE · tracking 0.18em</div><div class="ds-type-sample lp-mono" style="font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:var(--accent-300);">01 · pipeline</div></div>
     </section>
@@ -248,7 +248,7 @@ const BODY = String.raw`
               <div class="lp-header-l">
                 <a class="lp-brand" href="#"><div class="lp-brand-mark"></div><span class="lp-brand-title">Spatiality</span></a>
                 <span class="lp-brand-divider"></span>
-                <span class="lp-mono lp-muted lp-brand-tag">glasses → 3D twin</span>
+                <span class="lp-mono lp-muted lp-brand-tag">fast 3D mesh inference</span>
               </div>
               <nav class="lp-nav">
                 <a href="#">Pipeline</a>
@@ -338,8 +338,8 @@ const BODY = String.raw`
             <div class="lp-app-brand">
               <span class="lp-app-brand-mark"></span>
               <div class="lp-app-brand-meta">
-                <span class="lp-app-brand-title">Glasses → 3D Twin</span>
-                <span class="lp-app-brand-id">dec5d8d886e6e</span>
+                <span class="lp-app-brand-title">Spatiality</span>
+                <span class="lp-app-brand-id">fast 3D mesh inference</span>
               </div>
             </div>
             <div></div>

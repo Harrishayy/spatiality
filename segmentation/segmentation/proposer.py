@@ -5,8 +5,6 @@ parallel via asyncio.gather and returns a flat list of (frame, phrase, bbox,
 confidence). The lift step turns each bbox into a rectangular mask so it
 flows through cluster_via_masks side-by-side with SAM masks.
 
-Spec: plans/modules/03_segmentation.md (revised).
-
 Hard rules (CLAUDE.md):
 - Every model call routes through Pydantic AI Gateway (auth_token, not api_key).
 - Logfire spans observe each frame call + a summary span.

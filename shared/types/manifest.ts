@@ -1,5 +1,4 @@
 // MIRROR OF shared/shared/schemas/manifest.py — keep in sync.
-// Spec: plans/modules/05_storage.md.
 
 export type StageStatus = "pending" | "running" | "complete" | "failed";
 export type ManifestStatus = "queued" | "processing" | "ready" | "failed";

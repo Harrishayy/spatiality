@@ -2,9 +2,7 @@
 
 Default: stub (hand-crafted annotations) so `just smoke` works without GPU.
 --real: VLM proposer + SAM 3.1 masks (parallel) -> Jaccard-merged 3D clusters
--> Claude Haiku VLM labeler, per plans/modules/03_segmentation.md.
-
-Span names match the demo evidence table in 08_observability.md.
+-> Claude Haiku VLM labeler.
 """
 
 from __future__ import annotations

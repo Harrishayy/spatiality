@@ -16,7 +16,7 @@
 4. **3D is the hero.** Real geometry over decoration. SVG is fine for product
    chrome, but anything that should feel "twin" lives in Three.js.
 5. **Modules > pages.** Every UI region maps to a swappable component.
-   Filenames mirror module names from `plans/modules/`.
+   One feature per file; no God-files.
 6. **Don't fight the existing app.** Class names, ink scale, accent ramp and
    stage labels match `web/app/components/`. Refactor in place; don't fork.
 

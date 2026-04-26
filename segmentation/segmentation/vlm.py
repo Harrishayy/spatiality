@@ -1,7 +1,5 @@
 """VLM batched labeling via Pydantic AI Gateway.
 
-Spec: plans/modules/03_segmentation.md + plans/modules/08_observability.md.
-
 Hard rules (from CLAUDE.md):
 - Every model call routes through Pydantic AI Gateway.
 - Anthropic SDK uses auth_token (Bearer), NOT api_key.

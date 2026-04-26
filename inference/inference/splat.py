@@ -1,7 +1,5 @@
 """Voxel-downsample VGGT surfels into an INRIA-layout splat PLY.
 
-Spec: plans/modules/02_inference.md.
-
 Pipeline shape:
   poses.py → surfels.npz (per-pixel anisotropic Gaussians from VGGT depth)
   splat.py → splat.ply   (voxel-downsampled, INRIA-format binary PLY)

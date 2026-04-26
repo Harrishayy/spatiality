@@ -8,19 +8,17 @@ dependencies = [
     "capture",
     "inference",
     "segmentation",
-    "cad_export",
     "modal>=0.64",
 ]
 
 [tool.uv.workspace]
-members = ["shared", "capture", "inference", "segmentation", "cad_export"]
+members = ["shared", "capture", "inference", "segmentation"]
 
 [tool.uv.sources]
 shared = { workspace = true }
 capture = { workspace = true }
 inference = { workspace = true }
 segmentation = { workspace = true }
-cad_export = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

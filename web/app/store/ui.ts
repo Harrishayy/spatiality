@@ -52,6 +52,12 @@ interface UIState {
   bounds: SceneBounds | null;
   renderMode: RenderMode;
   schematicMode: boolean;
+  /** When true, the viewer hides the full point cloud and renders a
+   *  reduced wireframe (voxel-downsampled background + per-object dense
+   *  points connected by kNN edges, monochrome, with floating labels at
+   *  annotation centroids). The full cloud's GPU buffers stay resident
+   *  so toggling back is instant. Mirrors `schematicMode` semantics. */
+  wireframeMode: boolean;
   /** When true, viewer clicks place measurement endpoints instead of doing
    *  the default action. Toggled via the "Measure" toolbar button. */
   measureMode: boolean;
@@ -76,6 +82,7 @@ interface UIState {
   setRenderMode: (mode: RenderMode) => void;
   cycleRenderMode: () => void;
   toggleSchematic: () => void;
+  toggleWireframe: () => void;
   toggleMeasureMode: () => void;
   beginMeasurement: (p: Vec3) => void;
   finishMeasurement: (p: Vec3) => void;
@@ -98,6 +105,7 @@ export const useUI = create<UIState>((set) => ({
   bounds: null,
   renderMode: "rgb",
   schematicMode: false,
+  wireframeMode: false,
   measureMode: false,
   measurements: [],
   pendingPoint: null,
@@ -126,6 +134,7 @@ export const useUI = create<UIState>((set) => ({
         ],
     })),
   toggleSchematic: () => set((s) => ({ schematicMode: !s.schematicMode })),
+  toggleWireframe: () => set((s) => ({ wireframeMode: !s.wireframeMode })),
   toggleMeasureMode: () =>
     set((s) => ({
       measureMode: !s.measureMode,

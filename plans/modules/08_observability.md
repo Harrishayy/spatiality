@@ -129,9 +129,22 @@ pipeline spans:
 | `modal.process_video` | modal_app | `scene_id`, `source_kind`, `frame_count`, `video_duration_s`, `video_width`, `video_height`, `backend`, `inference_spawned` |
 | `modal.run_inference` | modal_app | `scene_id`, `backend`, `keyframes`, `segment`, `segmentation_spawned` |
 | `modal.run_segmentation` | modal_app | `scene_id`, `keyframes` |
+| `modal.run_cad_export` | modal_app | `scene_id`, `object_count`, `object_filter`, `accepted_count`, `rejected_count` |
 | `modal.prepare_scene` | modal_app | `scene_id`, `manifest_state` |
 | `modal.subprocess.<stage>` | modal_app | `scene_id`, `stage`, `argv`, `returncode`, `stdout_tail`, `stderr_tail` (on failure) |
 | `modal.ffprobe`, `modal.ffmpeg_extract` | modal_app | `scene_id`, ffprobe/ffmpeg facts |
+
+CAD-export pipeline spans (module 11; spec: `11_cad_export.md`). Generation runs
+locally on H100 — no Gateway involvement, so `est_cost_usd` is omitted unless a
+future stage adds a model call:
+
+| Span name | Module | Required attrs |
+|-----------|--------|----------------|
+| `cad_export.views` | cad_export | `scene_id`, `object_count`, `mean_view_diversity_deg`, `low_diversity_count` |
+| `cad_export.generate` | cad_export | `scene_id`, `object_id`, `gpu`, `latency_ms`, `vertex_count`, `face_count` |
+| `cad_export.register` | cad_export | `scene_id`, `object_id`, `rmse`, `scale_recovered`, `accepted` |
+| `cad_export.fallback` | cad_export | `scene_id`, `object_id`, `method` (`nksr`/`poisson`), `reason` |
+| `cad_export.assemble` | cad_export | `scene_id`, `accepted_count`, `rejected_count`, `assembly_face_count` |
 
 The `inference.splat` span is a single voxel-downsample of the surfels
 emitted by `inference.vggt`; no per-step milestones are needed since

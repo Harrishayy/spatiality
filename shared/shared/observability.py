@@ -27,7 +27,15 @@ SPAN_AGENT_LOCATE = "agent.locate"
 SPAN_MODAL_PROCESS_VIDEO = "modal.process_video"
 SPAN_MODAL_RUN_INFERENCE = "modal.run_inference"
 SPAN_MODAL_RUN_SEGMENTATION = "modal.run_segmentation"
+SPAN_MODAL_RUN_CAD_EXPORT = "modal.run_cad_export"
 SPAN_MODAL_PREPARE_SCENE = "modal.prepare_scene"
+
+# CAD export pipeline (module 11). Spec: 11_cad_export.md.
+SPAN_CAD_VIEWS = "cad_export.views"
+SPAN_CAD_GENERATE = "cad_export.generate"
+SPAN_CAD_REGISTER = "cad_export.register"
+SPAN_CAD_FALLBACK = "cad_export.fallback"
+SPAN_CAD_ASSEMBLE = "cad_export.assemble"
 
 
 _PAYLOAD_LIMIT = 16_000  # bytes; OTLP attribute limit is generous but bounded.

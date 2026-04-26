@@ -141,6 +141,25 @@ export async function fetchTrace(sceneId: string): Promise<TraceResponse> {
   return unwrap(res, "fetchTrace");
 }
 
+export interface SceneSummary {
+  scene_id: string;
+  status?: string;
+  created_at?: string;
+  stats?: {
+    frame_count?: number;
+    object_count?: number;
+    splat_size_mb?: number;
+  };
+  thumbnail?: string;
+  total_duration_s?: number;
+}
+
+export async function fetchScenes(): Promise<SceneSummary[]> {
+  const res = await fetch("/api/scenes", { cache: "no-store" });
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export async function fetchGatewayHealth(): Promise<GatewayHealth | null> {
   try {
     const res = await fetch("/api/gateway/health");

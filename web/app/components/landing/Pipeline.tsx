@@ -16,31 +16,31 @@ const STAGES: Stage[] = [
   {
     key: "capture",
     label: "Capture",
-    sub: "frames + audio extracted",
+    sub: "wearable video → keyframes",
     duration: "4.1s",
     extra: "120 frames",
   },
   {
     key: "poses",
-    label: "Reconstruction (VGGT)",
-    sub: "poses + dense surfels",
+    label: "Reconstruction",
+    sub: "metric geometry + camera poses",
     duration: "38.7s",
-    extra: "120 / 240 frames",
+    extra: "2.41M points",
   },
   {
     key: "splat",
-    label: "Splat (cluster)",
-    sub: "voxel-downsampled to splat.ply",
+    label: "Compaction",
+    sub: "GPU-streamable mesh + splats",
     duration: "6.3s",
-    extra: "412 K clusters",
+    extra: "48 MB",
     hidden: true,
   },
   {
     key: "segmentation",
-    label: "Segmentation",
-    sub: "SAM 3.1 + VLM labels",
+    label: "Understanding",
+    sub: "instance masks + semantic labels",
     duration: "11.2s",
-    extra: "27 obj",
+    extra: "27 objects",
   },
 ];
 
@@ -70,13 +70,12 @@ export function LandingPipeline() {
   return (
     <section id="pipeline" className="lp-section lp-pipeline">
       <SectionHeader
-        eyebrow="01 · pipeline"
         title={
           <>
-            From <em>video</em> to <em>twin</em> in <em>~90s</em>.
+            From wearable capture to a <em>navigable 3D twin</em> in <em>under 90 seconds</em>.
           </>
         }
-        sub="Every stage is a swappable module. Filesystem-only artifacts. Logfire spans on every call."
+        sub="A production pipeline you can deploy on your own infrastructure. Every stage emits structured traces, so latency, cost, and quality are observable end-to-end."
       />
 
       <div className="lp-pipeline-grid">
@@ -94,8 +93,8 @@ function StagePanel() {
     <div className="lp-card lp-stage-panel">
       <div className="lp-card-head">
         <div className="lp-card-head-l">
-          <h3 className="lp-card-title">Pipeline</h3>
-          <span className="lp-mono lp-muted">scene_living_room_03</span>
+          <h3 className="lp-card-title">Inference run</h3>
+          <span className="lp-mono lp-muted">representative scene</span>
         </div>
         <span className="lp-status-pill lp-status-pill--ok">
           <span className="lp-status-dot lp-status-dot--ok" />
@@ -120,14 +119,12 @@ function StagePanel() {
       </ol>
 
       <div className="lp-stage-foot">
-        <span className="lp-mono lp-muted">
-          artifacts/scenes/living_room_03/
-        </span>
+        <span className="lp-mono lp-muted">deliverables</span>
         <div className="lp-stage-foot-files">
-          <FileChip name="manifest.json" />
-          <FileChip name="annotations.json" />
-          <FileChip name="splat.ply" />
-          <FileChip name="points.ply" />
+          <FileChip name="metric mesh" />
+          <FileChip name="point cloud" />
+          <FileChip name="instance masks" />
+          <FileChip name="semantic graph" />
         </div>
       </div>
     </div>

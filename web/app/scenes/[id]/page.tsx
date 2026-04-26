@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Header } from "@/components/Header";
@@ -90,22 +91,20 @@ export default function ScenePage() {
           )}
 
           {emptySplat && splatReady && (
-            <div className="pointer-events-none absolute left-3 top-3">
-              <div className="lp-banner">
-                <span className="lp-banner-dot" />
-                <div className="lp-banner-body">
-                  <span className="lp-banner-title">Demo placeholder</span>
-                  <span className="text-[11px] text-ink-300">
-                    splat.ply is empty (stub scene). Annotation bboxes render
-                    as wireframes. Drop a real splat at{" "}
-                    <code className="font-mono text-ink-200">
-                      /artifacts/scenes/{sceneId}/splat.ply
-                    </code>
-                    .
-                  </span>
-                </div>
+            <DismissibleBanner anchor="left">
+              <span className="lp-banner-dot" />
+              <div className="lp-banner-body">
+                <span className="lp-banner-title">Demo placeholder</span>
+                <span className="text-[11px] text-ink-300">
+                  splat.ply is empty (stub scene). Annotation bboxes render
+                  as wireframes. Drop a real splat at{" "}
+                  <code className="font-mono text-ink-200">
+                    /artifacts/scenes/{sceneId}/splat.ply
+                  </code>
+                  .
+                </span>
               </div>
-            </div>
+            </DismissibleBanner>
           )}
         </section>
 
@@ -176,14 +175,12 @@ function SegmentingBanner({ status }: { status: StageStatus }) {
       ? "Segmentation in progress — annotations will appear shortly."
       : "Annotations not yet generated. Segmentation pending.";
   return (
-    <div className="pointer-events-none absolute right-3 top-3">
-      <div className="lp-banner lp-banner--warn">
-        <span className="lp-banner-dot" />
-        <div className="lp-banner-body">
-          <span>{label}</span>
-        </div>
+    <DismissibleBanner anchor="right" tone="warn">
+      <span className="lp-banner-dot" />
+      <div className="lp-banner-body">
+        <span>{label}</span>
       </div>
-    </div>
+    </DismissibleBanner>
   );
 }
 
@@ -195,13 +192,50 @@ function FailedBanner({
   detail?: string;
 }) {
   return (
-    <div className="pointer-events-none absolute right-3 top-3">
-      <div className="lp-banner lp-banner--err">
-        <span className="lp-banner-dot" />
-        <div className="lp-banner-body">
-          <span className="lp-banner-title">{title}</span>
-          {detail && <span className="lp-banner-detail">{detail}</span>}
-        </div>
+    <DismissibleBanner anchor="right" tone="err">
+      <span className="lp-banner-dot" />
+      <div className="lp-banner-body">
+        <span className="lp-banner-title">{title}</span>
+        {detail && <span className="lp-banner-detail">{detail}</span>}
+      </div>
+    </DismissibleBanner>
+  );
+}
+
+function DismissibleBanner({
+  anchor,
+  tone,
+  children,
+}: {
+  anchor: "left" | "right";
+  tone?: "warn" | "err";
+  children: ReactNode;
+}) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  const toneCls = tone === "warn"
+    ? "lp-banner--warn"
+    : tone === "err"
+      ? "lp-banner--err"
+      : "";
+  return (
+    <div
+      className={[
+        "pointer-events-none absolute top-3",
+        anchor === "right" ? "right-3" : "left-3",
+      ].join(" ")}
+    >
+      <div className={`lp-banner ${toneCls}`}>
+        {children}
+        <button
+          type="button"
+          onClick={() => setHidden(true)}
+          className="lp-banner-close"
+          title="Dismiss"
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
       </div>
     </div>
   );

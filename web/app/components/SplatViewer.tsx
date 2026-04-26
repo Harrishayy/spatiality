@@ -2678,6 +2678,12 @@ function MeasurementOverlay({
 }
 
 function DebugHUD({ debug }: { debug: DebugState }) {
+  // Production-quiet: the HUD is a logging surface for failures only. When
+  // nothing's wrong, render nothing — no pill in the corner, no chrome.
+  // On error, auto-expand so the user (and we) can see what broke.
+  const errored = debug.status === "error" || !!debug.error;
+  if (!errored) return null;
+
   const dot =
     debug.status === "started"
       ? "bg-emerald-400"

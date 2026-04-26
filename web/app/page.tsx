@@ -1,8 +1,7 @@
 import { LandingHeader } from "@/components/landing/Header";
 import { LandingHero } from "@/components/landing/Hero";
 import { LandingPipeline } from "@/components/landing/Pipeline";
-import { LandingViewer } from "@/components/landing/Viewer";
-import { LandingModules } from "@/components/landing/Modules";
+import { LandingIndustries } from "@/components/landing/Modules";
 import { LandingFooter } from "@/components/landing/Footer";
 
 export default function Home() {
@@ -12,8 +11,7 @@ export default function Home() {
       <LandingHero />
       <main className="lp-main">
         <LandingPipeline />
-        <LandingViewer />
-        <LandingModules />
+        <LandingIndustries />
         <LandingFooter />
       </main>
     </>

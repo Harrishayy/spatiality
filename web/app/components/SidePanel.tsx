@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import type { Annotation, Manifest, StageStatus } from "@/lib/types";
 import { useUI } from "@/store/ui";
 import { AnnotationEvidencePanel } from "./AnnotationEvidencePanel";
@@ -31,54 +33,112 @@ export function SidePanel({
 
   return (
     <aside className="lp-side md:max-w-sm">
-      <section className="lp-side-section">
+      <CollapseSection
+        name="Pipeline"
+        accent="live"
+        meta={<span className="lp-collapse-count">{manifest.scene_id}</span>}
+        defaultOpen
+      >
         <PipelineProgress manifest={manifest} />
-      </section>
+      </CollapseSection>
 
-      <section className="lp-side-section">
-        <div className="lp-side-section-head">
-          <span className="lp-side-section-title">
-            <span className="lp-eyebrow">Objects</span>
-            <span className="lp-side-section-accent">scene</span>
-          </span>
-          <span className="lp-side-section-id">{annotations.length}</span>
-        </div>
+      <CollapseSection
+        name="Objects"
+        accent="scene"
+        meta={
+          <span className="lp-collapse-count">{annotations.length}</span>
+        }
+        defaultOpen
+      >
         <ObjectsList annotations={annotations} segStatus={segStatus} />
-      </section>
+        {isolatedIds.size > 0 && (
+          <button
+            onClick={clearIsolated}
+            className="lp-btn lp-btn-ghost lp-btn-sm self-start"
+          >
+            ↺ Clear isolation ({isolatedIds.size})
+          </button>
+        )}
+      </CollapseSection>
 
       {selected && (
-        <section className="lp-side-section">
+        <CollapseSection
+          name="Evidence"
+          accent={selected.label}
+          defaultOpen
+          flush
+        >
           <AnnotationEvidencePanel
             sceneId={manifest.scene_id}
             annotation={selected}
           />
-        </section>
+        </CollapseSection>
       )}
 
-      {isolatedIds.size > 0 && (
-        <button
-          onClick={clearIsolated}
-          className="lp-btn lp-btn-ghost lp-btn-sm self-start"
-        >
-          ↺ Clear isolation ({isolatedIds.size})
-        </button>
-      )}
-
-      <section className="lp-side-section lp-side-section--grow">
-        <div className="lp-side-section-head">
-          <span className="lp-side-section-title">
-            <span className="lp-eyebrow">Chat</span>
-            <span className="lp-side-section-accent">ask</span>
-          </span>
-        </div>
+      <CollapseSection
+        name="Chat"
+        accent="ask"
+        defaultOpen
+        grow
+        flush
+      >
         <ChatPanel
           sceneId={manifest.scene_id}
           messages={messages}
           onSend={onSend}
           disabled={loading}
         />
-      </section>
+      </CollapseSection>
     </aside>
+  );
+}
+
+interface SectionProps {
+  name: string;
+  accent?: string;
+  meta?: ReactNode;
+  defaultOpen?: boolean;
+  grow?: boolean;
+  flush?: boolean;
+  children: ReactNode;
+}
+
+function CollapseSection({
+  name,
+  accent,
+  meta,
+  defaultOpen,
+  grow,
+  flush,
+  children,
+}: SectionProps) {
+  return (
+    <details
+      open={defaultOpen}
+      className={[
+        "lp-collapse",
+        grow ? "lp-collapse--grow" : "",
+        flush ? "lp-collapse--flush" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <summary className="lp-collapse-head">
+        <span className="lp-collapse-title">
+          <span className="lp-collapse-title-name">{name}</span>
+          {accent && (
+            <span className="lp-collapse-title-accent">{accent}</span>
+          )}
+        </span>
+        <span className="lp-collapse-meta">
+          {meta}
+          <span className="lp-collapse-chevron" aria-hidden>
+            ▾
+          </span>
+        </span>
+      </summary>
+      <div className="lp-collapse-body">{children}</div>
+    </details>
   );
 }
 

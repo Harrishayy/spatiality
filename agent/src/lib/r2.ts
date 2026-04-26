@@ -1,4 +1,9 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID ?? "";
@@ -50,6 +55,29 @@ export async function getArtifactJson<T>(key: string): Promise<T | null> {
     if (e?.name === "NoSuchKey" || e?.$metadata?.httpStatusCode === 404) return null;
     throw err;
   }
+}
+
+export async function listSceneIds(): Promise<string[]> {
+  if (!client || !R2_ARTIFACTS_BUCKET) return [];
+  const ids = new Set<string>();
+  let token: string | undefined;
+  do {
+    const out = await client.send(
+      new ListObjectsV2Command({
+        Bucket: R2_ARTIFACTS_BUCKET,
+        Prefix: "scenes/",
+        Delimiter: "/",
+        ContinuationToken: token,
+      }),
+    );
+    for (const p of out.CommonPrefixes ?? []) {
+      const k = p.Prefix ?? "";
+      const id = k.replace(/^scenes\//, "").replace(/\/$/, "");
+      if (id) ids.add(id);
+    }
+    token = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (token);
+  return [...ids];
 }
 
 export async function getArtifactBytes(key: string): Promise<Buffer | null> {

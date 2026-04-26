@@ -81,3 +81,9 @@ samples/*.mp4
 # The ~6GB bundle and any kernel outputs live there; not worth committing.
 old/kaggle/
 node_modules
+
+# Third-party model checkpoints (TRELLIS2 — pulled at infer time, ~15GB)
+trellis2/
+
+# Design handoff zips (regenerated; not source)
+Spatiality.zip

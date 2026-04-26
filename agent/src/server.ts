@@ -8,6 +8,7 @@ import { chatRoute } from "./routes/chat.js";
 import { gatewayRoute } from "./routes/gateway.js";
 import { jobsRoute } from "./routes/jobs.js";
 import { locateRoute } from "./routes/locate.js";
+import { scenesRoute } from "./routes/scenes.js";
 import { traceRoute } from "./routes/trace.js";
 import { uploadsRoute } from "./routes/uploads.js";
 
@@ -40,6 +41,7 @@ app.get("/health", async () => ({ ok: true }));
 
 await app.register(uploadsRoute);
 await app.register(jobsRoute);
+await app.register(scenesRoute);
 await app.register(traceRoute);
 await app.register(gatewayRoute);
 await app.register(locateRoute);

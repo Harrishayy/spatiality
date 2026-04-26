@@ -1342,7 +1342,7 @@ COMMON_ENV_CAD = {
     gpu="H100",
     timeout=3600,
     volumes={"/artifacts": artifacts_volume, "/weights": weights_volume},
-    secrets=[LOGFIRE_SECRET],
+    secrets=[LOGFIRE_SECRET, HF_SECRET],
     cpu=4.0,
     memory=16384,
 )

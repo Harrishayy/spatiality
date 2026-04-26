@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { DEMO_SCENE_ID } from "@/lib/api";
 
 export function LandingFooter() {
   return (
@@ -8,26 +7,24 @@ export function LandingFooter() {
         <div className="lp-cta-card">
           <div className="lp-cta-grid" aria-hidden="true" />
           <div className="lp-cta-inner">
-            <span className="lp-eyebrow lp-mono">
-              <span className="lp-eyebrow-dot" aria-hidden="true" />
-              04 · ship it
-            </span>
             <h2 className="lp-cta-title">
-              <span className="lp-serif">Bring a video.</span>{" "}
-              <span className="lp-serif lp-serif-accent">Leave with a twin.</span>
+              <span className="lp-serif">Capture a space.</span>{" "}
+              <span className="lp-serif lp-serif-accent">Walk away with a 3D twin.</span>
             </h2>
             <p className="lp-cta-sub">
-              Mobile-first. Works on iPhone Safari, Pixel, desktop. No accounts, no setup.
+              Spatiality is built for teams that move fast: robotics, AR/VR,
+              field operations, and emergency response. Try it on your own
+              walkthrough — or talk to us about deploying it inside your stack.
             </p>
             <div className="lp-hero-cta">
               <Link className="lp-btn lp-btn-primary lp-btn-lg" href="/upload">
-                Drop a video <span className="lp-btn-arrow">→</span>
+                Capture a scene <span className="lp-btn-arrow">→</span>
               </Link>
               <Link
                 className="lp-btn lp-btn-ghost lp-btn-lg"
-                href={`/scenes/${DEMO_SCENE_ID}`}
+                href="/demos"
               >
-                View demo scene
+                Browse live demos
               </Link>
             </div>
           </div>
@@ -37,17 +34,13 @@ export function LandingFooter() {
       <footer className="lp-footer">
         <div className="lp-footer-l">
           <div className="lp-brand-mark lp-brand-mark--sm" />
-          <span className="lp-mono lp-muted">
-            spatiality · render branch · v0.4.2
-          </span>
+          <span className="lp-mono lp-muted">spatiality</span>
         </div>
-        <div className="lp-footer-links lp-mono">
-          <a href="https://github.com" target="_blank" rel="noreferrer">
-            github
-          </a>
-          <Link href="/design-system">design-system</Link>
-          <a href="#pipeline">logfire</a>
-          <a href="#docs">CLAUDE.md</a>
+        <div className="lp-footer-links">
+          <Link href="/#pipeline">Pipeline</Link>
+          <Link href="/demos">Live demo</Link>
+          <Link href="/#industries">Use cases</Link>
+          <Link href="/upload">Capture</Link>
         </div>
       </footer>
     </>

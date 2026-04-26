@@ -1,7 +1,7 @@
-# Module 07 — Agent backend (Devin spec)
+# Module 07 — Agent backend
 
 ## Owner
-**Devin — primary builder, end-to-end.** Read this as a Linear ticket.
+Harrish + Claude Code, end-to-end.
 
 ## Goal
 Fastify server with three responsibilities: orchestrate the pipeline (Modal trigger + status), serve scene artifacts, and proxy chat/VLM calls to Claude through Pydantic AI Gateway with Logfire tracing.

@@ -1137,14 +1137,58 @@ image_cad = (
         "lxml>=5",       # required by trimesh's 3MF writer
         "networkx>=3",   # required by trimesh's scene graph + 3MF writer
     )
-    # TRELLIS.2 — image-to-3D model. No PyPI release as of 2026-04 — install
-    # from source. The repo bundles its own setup.py / pyproject so editable
-    # install picks up trellis2.pipelines.Trellis2ImageTo3DPipeline.
-    # TODO(verify): if microsoft publishes a wheel, swap to plain pip_install.
+    # TRELLIS.2 — image-to-3D model. No PyPI release as of 2026-04, and the
+    # repo has no setup.py/pyproject.toml at root — `pip install -e .` does
+    # not work. Install path mirrors `setup.sh --basic --flash-attn`:
+    #  1. Pin torch 2.6.0 + cu124 (TRELLIS.2's documented stack; flash-attn
+    #     2.7.3 wheels target torch 2.6).
+    #  2. Install --basic pip deps directly (skipping conda env, gradio,
+    #     tensorboard — neither needed for inference).
+    #  3. Install flash-attn 2.7.3 (prebuilt wheel for torch 2.6 + cu124).
+    #  4. Add /opt/trellis2 to PYTHONPATH so `import trellis2` works.
+    # Optional CUDA-kernel extensions (cumesh, o-voxel, flexgemm, nvdiffrast,
+    # nvdiffrec) are skipped — not required for `run_multi_image(formats=["mesh"])`.
+    # Add only if a runtime ImportError demands it.
+    .apt_install("libjpeg-dev")
     .run_commands(
-        "git clone --depth 1 https://github.com/microsoft/TRELLIS.2.git /opt/trellis2",
-        "pip install --no-build-isolation -e /opt/trellis2",
+        "git clone https://github.com/microsoft/TRELLIS.2.git /opt/trellis2",
     )
+    .pip_install(
+        "torch==2.6.0",
+        "torchvision==0.21.0",
+        index_url="https://download.pytorch.org/whl/cu124",
+    )
+    .pip_install(
+        "imageio",
+        "imageio-ffmpeg",
+        "tqdm",
+        "easydict",
+        "opencv-python-headless",
+        "ninja",
+        "transformers",
+        "lpips",
+        "zstandard",
+        "kornia",
+        "timm",
+        "pandas",
+        "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8",
+    )
+    .pip_install("flash-attn==2.7.3", extra_options="--no-build-isolation")
+    # Optional CUDA kernel extensions trellis2.__init__ imports unconditionally:
+    #   - cumesh: trellis2.representations.mesh (REQUIRED at import)
+    #   - o-voxel: bundled in /opt/trellis2/o-voxel (REQUIRED)
+    #   - flexgemm: trellis2.modules.sparse (REQUIRED)
+    # nvdiffrast/nvdiffrec are only needed for differentiable rendering /
+    # texture baking, which formats=["mesh"] does not invoke. Skip until
+    # runtime demands them.
+    .run_commands(
+        "git clone https://github.com/JeffreyXiang/CuMesh.git --recursive /tmp/CuMesh",
+        "pip install --no-build-isolation /tmp/CuMesh",
+        "git clone https://github.com/JeffreyXiang/FlexGEMM.git --recursive /tmp/FlexGEMM",
+        "pip install --no-build-isolation /tmp/FlexGEMM",
+        "pip install --no-build-isolation /opt/trellis2/o-voxel",
+    )
+    .env({"PYTHONPATH": "/opt/trellis2:/repo"})
     # cad_export package itself.
     .add_local_dir("./cad_export", remote_path="/repo/cad_export", copy=True)
     .run_commands("pip install --no-deps -e /repo/cad_export")
@@ -1201,7 +1245,11 @@ def cad_export_object(payload: dict) -> dict:
     via .map(return_exceptions=True) from a separate orchestrator.
     """
     import os
+    import sys
     from pathlib import Path
+
+    if "/opt/trellis2" not in sys.path:
+        sys.path.insert(0, "/opt/trellis2")
 
     from shared.observability import configure_logfire  # type: ignore
 
@@ -1213,7 +1261,10 @@ def cad_export_object(payload: dict) -> dict:
     scene_id = payload["scene_id"]
     obj_id = payload["obj_id"]
     view_dir = Path(payload["view_dir"])
-    out_path = Path(f"/tmp/cad_export/{obj_id}/raw.glb")
+    out_path = Path(payload.get("out_path") or f"/tmp/cad_export/{obj_id}/raw.glb")
+
+    if str(view_dir).startswith("/artifacts"):
+        artifacts_volume.reload()
 
     result = generate_mesh(
         obj_id=obj_id,
@@ -1221,6 +1272,10 @@ def cad_export_object(payload: dict) -> dict:
         out_path=out_path,
         scene_id=scene_id,
     )
+
+    if str(out_path).startswith("/artifacts"):
+        artifacts_volume.commit()
+
     return {
         "obj_id": result.obj_id,
         "glb_path": str(result.glb_path),

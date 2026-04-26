@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { frameUrl } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
 
 interface Props {
+  sceneId: string;
   messages: ChatMessage[];
   onSend: (text: string) => void;
   disabled?: boolean;
 }
 
-export function ChatPanel({ messages, onSend, disabled }: Props) {
+export function ChatPanel({ sceneId, messages, onSend, disabled }: Props) {
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -34,7 +36,7 @@ export function ChatPanel({ messages, onSend, disabled }: Props) {
         className="scroll-thin flex-1 space-y-3 overflow-y-auto pb-3 pr-1"
       >
         {messages.map((m) => (
-          <Message key={m.id} m={m} />
+          <Message key={m.id} m={m} sceneId={sceneId} />
         ))}
       </div>
       <div className="flex gap-2 border-t border-ink-800 pt-3">
@@ -69,13 +71,14 @@ export function ChatPanel({ messages, onSend, disabled }: Props) {
   );
 }
 
-function Message({ m }: { m: ChatMessage }) {
+function Message({ m, sceneId }: { m: ChatMessage; sceneId: string }) {
   const isUser = m.role === "user";
+  const frames = m.frames_used ?? [];
   return (
     <div
       className={[
-        "flex animate-slide-in",
-        isUser ? "justify-end" : "justify-start",
+        "flex flex-col animate-slide-in",
+        isUser ? "items-end" : "items-start",
       ].join(" ")}
     >
       <div
@@ -89,6 +92,23 @@ function Message({ m }: { m: ChatMessage }) {
       >
         {m.text}
       </div>
+      {!isUser && frames.length > 0 && (
+        <div className="mt-1 flex max-w-[85%] flex-col gap-1">
+          <div className="text-[10px] uppercase tracking-wider text-ink-500">
+            Looked at {frames.length} frame{frames.length === 1 ? "" : "s"}
+          </div>
+          <div className="flex gap-1 overflow-x-auto">
+            {frames.map((name) => (
+              <img
+                key={name}
+                src={frameUrl(sceneId, name)}
+                alt={name}
+                className="h-12 w-16 flex-none rounded border border-ink-700 object-cover"
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

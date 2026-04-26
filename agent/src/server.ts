@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 
+import { chatRoute } from "./routes/chat.js";
 import { gatewayRoute } from "./routes/gateway.js";
 import { jobsRoute } from "./routes/jobs.js";
 import { locateRoute } from "./routes/locate.js";
@@ -40,6 +41,7 @@ await app.register(jobsRoute);
 await app.register(traceRoute);
 await app.register(gatewayRoute);
 await app.register(locateRoute);
+await app.register(chatRoute);
 
 app
   .listen({ port: PORT, host: HOST })

@@ -87,12 +87,12 @@ def generate_mesh(
         try:
             from trellis2.pipelines import Trellis2ImageTo3DPipeline  # type: ignore[import-not-found]
         except ImportError as exc:
+            import sys
             span.set_attribute("import_error", str(exc))
             raise RuntimeError(
-                "trellis2 not installed — generate_mesh must run on the cad_export "
-                "Modal image (image_cad) where trellis2 is editably installed at "
-                "/opt/trellis2. For local fixture-driven dev, use E4/E5/E6 verify "
-                "scripts which don't touch this module."
+                f"trellis2 import failed: {exc!r}\n"
+                f"sys.path={sys.path}\n"
+                f"/opt/trellis2 listing: {list(__import__('os').listdir('/opt/trellis2')) if __import__('os').path.isdir('/opt/trellis2') else 'MISSING'}"
             ) from exc
 
         views = _load_views(view_dir)

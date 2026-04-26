@@ -52,6 +52,7 @@ export function SidePanel({
         </h3>
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatPanel
+            sceneId={manifest.scene_id}
             messages={messages}
             onSend={onSend}
             disabled={loading}

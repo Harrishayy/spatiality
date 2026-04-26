@@ -98,7 +98,7 @@ artifacts/
 6. Final manifest written when all stages complete
 
 ## Acceptance criteria
-- Stub generator produces a valid manifest + matching files for `samples/test_scene` so Devin can build against it.
+- Stub generator produces a valid manifest + matching files for `samples/test_scene` so the web layer can build against it.
 - Manifest is always parseable even mid-job (every stage has a defined status).
 - Disk usage stays under 1GB per scene; cleanup script for old scenes (>7 days) runs as a daily cron.
 

@@ -46,7 +46,7 @@ python segmentation/run.py --scene <scene_id> [--keyframes 5]
 ```
 
 ## Implementation steps
-1. **Hour 0:** stub `segmentation/run.py` that emits 5 fake objects in plausible 3D positions. Unblocks Devin's web work.
+1. **Hour 0:** stub `segmentation/run.py` that emits 5 fake objects in plausible 3D positions. Unblocks the web layer's work.
 2. **Hour 5:** wire SAM 3.1 mask gen on a single keyframe; verify masks look right.
 3. **Hour 5.5:** mask-to-Gaussian lifting on the test scene.
 4. **Hour 6:** VLM batch labeling pipeline.

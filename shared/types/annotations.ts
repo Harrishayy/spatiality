@@ -14,6 +14,7 @@ export interface Annotation {
   alternatives: string[];
   cluster_gaussian_indices: number[];
   provenance?: string[];
+  frame_ids?: string[];
 }
 
 export type AnnotationsFile = Annotation[];

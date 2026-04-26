@@ -43,6 +43,9 @@ def _stub_annotations() -> AnnotationsFile:
                 confidence=0.91,
                 alternatives=["laptop", "MacBook"],
                 cluster_gaussian_indices=[12, 45, 78, 102],
+                # TODO(swap): real frame names from the cluster come from
+                # lift_masks; stubs hard-code the first two so chat demos work.
+                frame_ids=["frame_0001.jpg", "frame_0007.jpg"],
             ),
             Annotation(
                 id="obj_002",
@@ -53,6 +56,7 @@ def _stub_annotations() -> AnnotationsFile:
                 confidence=0.83,
                 alternatives=["books", "pile of books"],
                 cluster_gaussian_indices=[201, 202, 215, 233, 244],
+                frame_ids=["frame_0003.jpg", "frame_0009.jpg"],  # TODO(swap)
             ),
         ]
     )
@@ -364,6 +368,7 @@ def _to_annotations(clusters, labels) -> AnnotationsFile:
                 alternatives=lab.alternatives if lab else [],
                 cluster_gaussian_indices=c.gaussian_indices,
                 provenance=list(c.sources),
+                frame_ids=list(c.frame_ids),
             )
         )
     return AnnotationsFile(root=out)

@@ -110,5 +110,4 @@ Map of `obj_id` → spec §11.5 fields:
 - Modal image extension for TRELLIS / Open3D / NKSR (E3).
 - The Modal `run_cad_export` HTTP endpoint (E7).
 - The `modal volume put glasses-twin-weights ... trellis2/` upload step (E3).
-- TS schema mirror in `shared/types/manifest.ts` — Devin's territory; flag in
-  PR description per CLAUDE.md session-scope rule.
+- TS schema mirror in `shared/types/manifest.ts` and `web/app/lib/types.ts`.

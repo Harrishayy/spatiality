@@ -208,9 +208,9 @@ H100 on Modal is ~$4/hr. Per-scene CAD export budget:
 - No Pydantic Gateway / VLM cost in this module — TRELLIS runs purely
   local on H100, no model API calls.
 
-## TS schema mirror (Devin)
+## TS schema mirror
 
-`shared/types/manifest.ts` needs the same fields appended:
+`shared/types/manifest.ts` and `web/app/lib/types.ts` need the same fields appended:
 
 ```typescript
 // In the Stages interface:
@@ -225,6 +225,6 @@ cadObjectCount?: number;
 cadTotalFaceCount?: number;
 ```
 
-Or whatever naming convention Devin's TypeScript side prefers (Python uses
-snake_case; TS may use camelCase + a serializer in agent/). Coordinate
-before merging the web/agent side.
+Use whatever naming convention the rest of the TypeScript side already uses
+(Python uses snake_case; TS may use camelCase + a serializer in agent/) and
+keep both mirrors consistent.

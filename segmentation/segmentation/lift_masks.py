@@ -286,6 +286,7 @@ def _cache_load(scene_dir: Path, key: dict) -> list[Cluster] | None:
                 anchor_area=c["anchor_area"],
                 sources=tuple(c.get("sources", ())),
                 proposed_phrase=c.get("proposed_phrase", ""),
+                frame_ids=list(c.get("frame_ids", [])),
             )
         )
     return out
@@ -305,6 +306,7 @@ def _cache_save(scene_dir: Path, key: dict, clusters: list[Cluster]) -> None:
                 "anchor_area": int(c.anchor_area),
                 "sources": list(c.sources),
                 "proposed_phrase": c.proposed_phrase,
+                "frame_ids": list(c.frame_ids),
             }
             for c in clusters
         ],
@@ -610,6 +612,10 @@ def cluster_via_masks(
             anchor = filtered_masks[anchor_local]
 
             sources_set = sorted({filtered_masks[i].source for i in g})
+            # Frames where this object was observed. Capped at 6 — the chat
+            # agent only inlines a few per request and Anthropic image budget
+            # is finite. Sorted for deterministic output.
+            frame_ids_seen = sorted({filtered_masks[i].frame_name for i in g})[:6]
             # Best VLM phrase in the group: highest proposal_confidence.
             vlm_members = [filtered_masks[i] for i in g if filtered_masks[i].source == "vlm"]
             proposed_phrase = ""
@@ -638,6 +644,7 @@ def cluster_via_masks(
                     anchor_area=int(anchor.area),
                     sources=tuple(sources_set),
                     proposed_phrase=proposed_phrase,
+                    frame_ids=frame_ids_seen,
                 )
             )
 
@@ -799,8 +806,10 @@ def merge_duplicate_clusters(
         phrase = clusters[phrase_member].proposed_phrase
 
         union_sources: set[str] = set()
+        union_frames: set[str] = set()
         for m in members:
             union_sources.update(clusters[m].sources)
+            union_frames.update(clusters[m].frame_ids)
 
         merged.append(
             Cluster(
@@ -816,6 +825,7 @@ def merge_duplicate_clusters(
                 anchor_area=anchor.anchor_area,
                 sources=tuple(sorted(union_sources)),
                 proposed_phrase=phrase,
+                frame_ids=sorted(union_frames)[:6],
             )
         )
 
@@ -934,8 +944,10 @@ def merge_annotations_by_label(
 
         # Provenance: sorted union.
         prov_set: set[str] = set()
+        frame_set: set[str] = set()
         for m in members:
             prov_set.update(annotations[m].provenance)
+            frame_set.update(getattr(annotations[m], "frame_ids", []) or [])
 
         # Strip any leading "duplicate_of:" alternatives from the survivor —
         # the survivor IS the canonical now.
@@ -953,6 +965,7 @@ def merge_annotations_by_label(
             alternatives=alts,
             cluster_gaussian_indices=idx_pool,
             provenance=sorted(prov_set),
+            frame_ids=sorted(frame_set)[:6],
         )
         merged.append(merged_ann)
 

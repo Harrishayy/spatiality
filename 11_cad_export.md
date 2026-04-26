@@ -263,7 +263,7 @@ class Artifacts(BaseModel):
     cad_objects_dir: str | None = None              # new — directory path
 ```
 
-Mirror in `shared/types/manifest.ts` (Devin's territory — flag in PR description, do not edit `/web` or `/agent` directly per the session-scope rule in CLAUDE.md).
+Mirror in `shared/types/manifest.ts` and `web/app/lib/types.ts`.
 
 Add to `Stats`:
 
@@ -336,7 +336,7 @@ Hour budget assumes one focused builder. Do not expand scope — this module is 
 ## Out of scope
 - **Mesh → BREP / STEP / IGES.** True parametric solids would need CAD-Recode or HoLa-style abstraction networks. Multi-day project. Not in this hackathon.
 - **PBR materials in the final assembly.** STL drops textures entirely; 3MF carries them poorly across CAD importers. We emit textured OBJ for the object viewer and bake-down diffuse PNGs alongside, but the canonical CAD deliverable is geometry-only.
-- **Per-object rerun via the web UI.** The CLI accepts `--object`, but a re-run button in `/web` is Devin's call.
+- **Per-object rerun via the web UI.** The CLI accepts `--object`; a re-run button in `/web` is a follow-up.
 - **Joint scene-level relighting.** Each object carries its own diffuse texture from TRELLIS. They will not look photometrically consistent when assembled.
 - **Floor / walls / ceiling / large architectural surfaces.** TRELLIS is trained on object-scale assets; "left wall" will fail. Detection: annotation label matches `/^(wall|floor|ceiling|window|door)$/`. Force these to `path_taken == "fallback_poisson"` from the start, and crop tightly to the cluster bbox.
 
@@ -352,11 +352,11 @@ The 3MF assembly is **not** a faithful capture of the room. It is a per-object h
 ## Open questions (resolve before starting impl)
 - TRELLIS.2 license — confirm Microsoft's terms allow Modal-hosted inference for hackathon-public demos. (As of CVPR'25 release: research+commercial OK; verify on the model card.)
 - Do we want to ship the `objects/` directory publicly, or only `scene.3mf`? Bandwidth concern: 8 OBJs + textures + STLs ≈ 50–200 MB per scene.
-- Do `/web` and `/agent` need a download button for the 3MF? If yes, this is a Devin coord — surface in PR, do not edit `/web` here per session scope.
+- Do `/web` and `/agent` need a download button for the 3MF? If yes, surface in PR and add it as a follow-up.
 
 ## Coordination notes (read before opening a PR)
 - This module is **session-scope new** — it does not exist in CLAUDE.md's named sessions. Treat it as an extension of Session D (Polish), since it sits downstream of segmentation and object isolation.
 - `inference/modal_app.py` is shared territory — extending its image and adding `run_cad_export` is in-scope here, but do not refactor existing endpoints.
-- Schema changes in `shared/shared/schemas/manifest.py` require a mirror update in `shared/types/manifest.ts` — Devin owns that file. Either coordinate or write the mirror as a suggestion in the PR description, but do not edit `/web` or `/agent`.
+- Schema changes in `shared/shared/schemas/manifest.py` require mirror updates in `shared/types/manifest.ts` and `web/app/lib/types.ts`. Update them in the same PR.
 - `08_observability.md` should be updated with the new spans (additive change only).
 - `ORCHESTRATOR.md` module-map table should grow a row 11. `05_storage.md` should append the `cad/` subtree to the layout block.

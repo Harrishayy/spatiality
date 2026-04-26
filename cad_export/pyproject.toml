@@ -1,6 +1,6 @@
 [project]
 name = "cad_export"
-version = "0.0.1"
+version = "0.0.2"
 description = "CAD export — per-object watertight meshes (3MF/OBJ/STL) from splat + annotations. Spec: 11_cad_export.md."
 requires-python = ">=3.11"
 dependencies = [

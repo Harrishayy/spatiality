@@ -19,6 +19,8 @@ SPAN_SEGMENTATION_SAM3 = "segmentation.sam3"
 SPAN_SEGMENTATION_VLM_PROPOSAL = "segmentation.vlm_proposal"
 SPAN_SEGMENTATION_VLM = "segmentation.vlm_label"
 SPAN_AGENT_LOCATE = "agent.locate"
+SPAN_AGENT_CHAT = "agent.chat"
+SPAN_AGENT_CHAT_TOOL = "agent.chat.tool"
 
 # Modal-side wrapper spans — every web endpoint + spawnable wraps its body in
 # one of these so the trace timeline shows wall-clock per request, including

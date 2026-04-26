@@ -1,7 +1,7 @@
-# Module 06 — Web (Devin spec)
+# Module 06 — Web
 
 ## Owner
-**Devin — primary builder, end-to-end.** Read this as a Linear ticket.
+Harrish + Claude Code, end-to-end.
 
 ## Goal
 A mobile-viewable URL where users (a) upload a video, (b) watch the pipeline run, and (c) navigate the resulting 3D twin while asking a VLM real-time spatial questions about their viewpoint.

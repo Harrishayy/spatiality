@@ -145,12 +145,18 @@ def _to_b64(img: Image.Image) -> str:
 
 _PROMPT = """You're labeling objects in a 3D scan of a room.
 
-Each tile shows one cropped region with its ID labeled in white (e.g. "obj_001"). A small grey hint under the ID is the prior guess from a wide-angle pass — confirm it, refine it, or override it based on the cropped image.
+Each tile shows one cropped region with its ID labeled in white (e.g. "obj_001"). A small grey hint under the ID is the prior guess from a wide-angle pass — confirm it, refine it, or OVERRIDE it based on the cropped image.
+
+Labels should be specific canonical names for the WHOLE object visible in the crop. Brand/model/character is encouraged when clearly visible ("MacBook Air M3", "Stitch plush toy", "Amazon Echo Dot"). Material/colour descriptors are fine ("white cotton sock", "Lilo & Stitch plush toy", "spiral notebook", "plaid pajama pants"). Detect SMALL items (socks, pens, plush toys, figurines, remotes, mugs, cables) — they are not "parts" of the surface they rest on.
+
+CRITICAL — the label MUST NOT fold TWO distinct objects together. The label MUST NOT contain the connectors "with", "and", "on", "next", "near", "behind", "under", "above" used to combine separate objects. Adjective chains describing one object are fine ("white cotton sock"); compound phrases joining two objects ("door with clothes hook", "notebook with pen") are not. If the prior hint contains a compound phrase like "X with Y", DROP the hint and return only the canonical name for the object that fills most of the crop (e.g. hint "door frame with clothes hook" → "door"; hint "white interior door with handle" → "white door" — the handle is part of the door, not its own object).
+
+Don't decompose monolithic objects into their physical parts. A door's handle/frame/hinges all collapse to "door". A laptop's keyboard/screen all collapse to one entry.
 
 For each tile return ONE of:
-1. A specific label. Use brand or model where visible (e.g. "MacBook Air M3", "Yeti microphone"); otherwise a short descriptive phrase ("stack of hardcover books"). Confidence is 0..1.
+1. A canonical-noun label as above. Confidence is 0..1.
 2. "none" — if the crop shows wall, floor, ceiling, window, blur, empty space, or nothing identifiable. Set confidence to 0.
-3. A duplicate flag — if two tiles clearly show the same physical object, keep the higher-confidence one as a real label and on the OTHER tile set "alternatives": ["duplicate_of:obj_XXX"] (replace with the surviving ID). The duplicate's "label" can be the same string as the survivor; the alternatives flag is what matters.
+3. A duplicate flag — if two tiles share the same canonical object AND the crops show overlapping or adjacent surfaces (likely the same physical object viewed from different angles), pick ONE survivor (the higher-confidence / larger crop) and on every OTHER tile set "alternatives": ["duplicate_of:obj_XXX"] with the survivor's ID. The duplicate's "label" should match the survivor. ERR ON THE SIDE OF DECLARING DUPLICATES — over-merging is preferred to over-splitting.
 
 Reply with ONE JSON object keyed by ID, no prose, no code fence:
 {

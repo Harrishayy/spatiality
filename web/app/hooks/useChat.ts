@@ -35,7 +35,13 @@ export function useChat(sceneId: string) {
         setMessages((m) =>
           m.map((msg) =>
             msg.id === pendingId
-              ? { ...msg, text: resp.text, pending: false }
+              ? {
+                  ...msg,
+                  text: resp.text,
+                  pending: false,
+                  frames_used: resp.frames_used ?? [],
+                  tools_called: resp.tools_called ?? [],
+                }
               : msg,
           ),
         );

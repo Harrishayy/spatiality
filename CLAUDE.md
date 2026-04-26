@@ -20,11 +20,11 @@ Each Claude Code session is scoped to one of these. The user's first prompt will
 - **Session C — Segmentation.** Reads: 03_segmentation. Output: SAM 3.1 mask generation + VLM labeling pipeline; emits annotations.json conforming to the schema.
 - **Session D — Polish.** Reads: 04_object_isolation. Output: integration testing, second test scene, demo-bake script.
 
-`/web` and `/agent` are owned by **Devin** in a separate workspace. In this repo, create empty placeholder directories `web/` and `agent/` with a single README pointing at [`plans/modules/06_web.md`](plans/modules/06_web.md) and [`plans/modules/07_agent.md`](plans/modules/07_agent.md). Do not implement them here.
+`/web` and `/agent` live in this repo and are in-scope for any session — see [`plans/modules/06_web.md`](plans/modules/06_web.md) and [`plans/modules/07_agent.md`](plans/modules/07_agent.md) for their specs.
 
 ## Conventions
 - Python 3.11. `uv` for env management. `pyproject.toml` per Python module.
-- Node 20+. pnpm. TS strict mode. (Mostly Devin's territory.)
+- Node 20+. pnpm. TS strict mode.
 - `justfile` at the root for top-level recipes (`just capture`, `just infer`, etc.).
 - Type everything: pydantic models for Python data, TS interfaces for JS data.
 - Git commit after each module reaches "scaffolded with stub output" state.

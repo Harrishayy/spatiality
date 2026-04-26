@@ -30,4 +30,4 @@ Let the user tap an object in the viewer and see it on its own — either by hid
 This module is implemented entirely in `/web` — it doesn't write any new artifacts. It reads `annotations.json` and uses the `cluster_gaussian_indices` field already present.
 
 ## Owner
-Devin, as part of `/web` polish phase. See [`06_web.md`](./06_web.md).
+Lands as part of `/web` polish phase. See [`06_web.md`](./06_web.md).

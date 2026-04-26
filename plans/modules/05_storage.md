@@ -19,6 +19,16 @@ artifacts/
       annotations.json
       thumbnail.jpg
       manifest.json
+      cad/                       # written by cad_export (module 11)
+        objects/
+          obj_001.obj            # textured mesh, scene coords
+          obj_001.mtl
+          obj_001.png            # baked diffuse
+          obj_001.stl            # geometry-only
+          ...
+        scene.3mf                # assembly with named parts
+        positions.json           # per-object SE(3) + scale from registration
+        qc.json                  # per-object QC + path_taken
 ```
 
 ## `manifest.json` schema (the contract)
@@ -31,18 +41,23 @@ artifacts/
     "capture":      {"status": "complete", "duration_s": 8},
     "poses":        {"status": "complete", "duration_s": 1.2, "method": "vggt"},
     "splat":        {"status": "complete", "duration_s": 92,  "iterations": 7000},
-    "segmentation": {"status": "complete", "duration_s": 78,  "object_count": 6}
+    "segmentation": {"status": "complete", "duration_s": 78,  "object_count": 6},
+    "cad_export":   {"status": "complete", "duration_s": 312, "accepted_count": 5, "rejected_count": 1}
   },
   "artifacts": {
     "splat_ply":         "/artifacts/scenes/bedroom_v1/splat.ply",
     "annotations_json":  "/artifacts/scenes/bedroom_v1/annotations.json",
     "thumbnail_jpg":     "/artifacts/scenes/bedroom_v1/thumbnail.jpg",
-    "cameras_json":      "/artifacts/scenes/bedroom_v1/cameras.json"
+    "cameras_json":      "/artifacts/scenes/bedroom_v1/cameras.json",
+    "cad_scene_3mf":     "/artifacts/scenes/bedroom_v1/cad/scene.3mf",
+    "cad_objects_dir":   "/artifacts/scenes/bedroom_v1/cad/objects"
   },
   "stats": {
-    "frame_count":   61,
-    "object_count":  6,
-    "splat_size_mb": 42
+    "frame_count":         61,
+    "object_count":        6,
+    "splat_size_mb":       42,
+    "cad_object_count":    5,
+    "cad_total_face_count": 412503
   },
   "errors": []
 }
@@ -83,7 +98,7 @@ artifacts/
 6. Final manifest written when all stages complete
 
 ## Acceptance criteria
-- Stub generator produces a valid manifest + matching files for `samples/test_scene` so Devin can build against it.
+- Stub generator produces a valid manifest + matching files for `samples/test_scene` so the web layer can build against it.
 - Manifest is always parseable even mid-job (every stage has a defined status).
 - Disk usage stays under 1GB per scene; cleanup script for old scenes (>7 days) runs as a daily cron.
 

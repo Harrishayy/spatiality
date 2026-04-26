@@ -14,7 +14,7 @@ Two demo pillars:
 - **Segmentation:** two-pass — SAM 3.1 produces masks, then a VLM (Claude Haiku via Pydantic AI Gateway) names each region with fine-grained labels.
 - **GPU:** Kaggle (RTX Pro 6000, offline-bundled) for early test runs → Modal or Brev for the production demo run.
 - **Hosting:** Render hosts `/web` (static site) + `/agent` (web service). Inference is external.
-- **Builders:** Harrish + Claude Code own pipeline modules. Devin owns `/web` + `/agent`.
+- **Builders:** Harrish + Claude Code own all modules, including `/web` + `/agent`.
 - **Observability + cost:** Pydantic AI Gateway is the only model entry point. Logfire traces every call. Hard spend caps configured day 0.
 
 ## Module map
@@ -25,11 +25,12 @@ Two demo pillars:
 | 2 | inference | Harrish + Claude | frames/ | splat.ply, points.ply, cameras.json |
 | 3 | segmentation | Harrish + Claude | splat.ply + frames | annotations.json |
 | 4 | object-isolation (stretch) | Harrish | annotations.json + splat.ply | per-object viewer state |
-| 5 | storage | Devin (interface), Harrish (impl) | (provides) | manifest.json, scene dir |
-| 6 | web | **Devin** | manifest.json | mobile-viewable URL |
-| 7 | agent | **Devin** | manifest.json + chat | tool-use responses |
+| 5 | storage | Harrish + Claude | (provides) | manifest.json, scene dir |
+| 6 | web | Harrish + Claude | manifest.json | mobile-viewable URL |
+| 7 | agent | Harrish + Claude | manifest.json + chat | tool-use responses |
 | 8 | observability | Harrish | All model calls | Logfire dashboard, spend caps |
 | 9 | deployment | Harrish | render.yaml, modal app | live URLs |
+| 11 | cad-export | Harrish + Claude | splat.ply + cameras.json + annotations.json + frames | cad/scene.3mf, cad/objects/*, qc.json (per-object watertight meshes for Fusion/SolidWorks) |
 
 ## Critical path (the chain that gates the demo)
 ```
@@ -38,32 +39,31 @@ upload → frames → VGGT depth+camera → per-pixel surfel synth → voxel dow
 
 Total budget: **5 minutes** (inference itself is 5–15s on A100; the rest is upload + ffmpeg + segmentation). Anything that branches off this chain (segmentation, fine-grained labels, agent chat, per-object isolation) enriches the demo but does not gate the moment the splat appears on the phone.
 
-## Parallelization (3 workers)
+## Hour-by-hour plan
 
 ```
 Hour 0  ───────────────────────────────────────────────────────────
-        Harrish+Claude          Devin
-Hour 0  Repo + schemas          Repo + Render account
-Hour 1  Logfire/Gateway setup   /web scaffold (against stub manifest)
-Hour 2  Capture module          /agent scaffold (against fake annotations)
-Hour 3  Kaggle inference test   Splat viewer wired up
-Hour 4  Modal inference setup   Label overlays
-Hour 5  VGGT integration        Chat panel + tool-use
-Hour 6  Segmentation: SAM 3.1   Camera-fly animation
-Hour 7  VLM labeling pass       Render deploy + mobile QA
-Hour 8  E2E smoke               Polish
-Hour 9  E2E w/ real video       Bug fix
-Hour 10 Polish + 2nd scene      —
-Hour 11 Buffer                  —
-Hour 12-16 SLEEP                SLEEP
-Hour 17-20 Demo capture         Final UX pass
-Hour 21-23 Pitch deck + rehearse —
-Hour 24 Pitch                   Pitch
+Hour 0  Repo + schemas + Render account
+Hour 1  Logfire/Gateway setup; /web scaffold (against stub manifest)
+Hour 2  Capture module; /agent scaffold (against fake annotations)
+Hour 3  Kaggle inference test; splat viewer wired up
+Hour 4  Modal inference setup; label overlays
+Hour 5  VGGT integration; chat panel + tool-use
+Hour 6  Segmentation: SAM 3.1; camera-fly animation
+Hour 7  VLM labeling pass; Render deploy + mobile QA
+Hour 8  E2E smoke; polish
+Hour 9  E2E w/ real video; bug fix
+Hour 10 Polish + 2nd scene
+Hour 11 Buffer
+Hour 12-16 SLEEP
+Hour 17-20 Demo capture; final UX pass
+Hour 21-23 Pitch deck + rehearse
+Hour 24 Pitch
 ```
 
 ## Stub strategy (everyone unblocks day 0)
 Hour 0 deliverable: `modules/05_storage.md` finalized with manifest schema. Then:
-- Devin builds against a fake `manifest.json` pointing at a known-good prebaked splat (`samples/test_scene.ply`) and hardcoded annotations.
+- The web layer builds against a fake `manifest.json` pointing at a known-good prebaked splat (`samples/test_scene.ply`) and hardcoded annotations.
 - Pipeline modules build against the same fake input format on Harrish's side.
 - Each module ships v0 with a stub generator that produces valid output. Real implementation drops in v1.
 

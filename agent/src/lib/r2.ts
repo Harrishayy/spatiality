@@ -51,3 +51,19 @@ export async function getArtifactJson<T>(key: string): Promise<T | null> {
     throw err;
   }
 }
+
+export async function getArtifactBytes(key: string): Promise<Buffer | null> {
+  if (!client || !R2_ARTIFACTS_BUCKET) return null;
+  try {
+    const out = await client.send(
+      new GetObjectCommand({ Bucket: R2_ARTIFACTS_BUCKET, Key: key }),
+    );
+    if (!out.Body) return null;
+    const arr = await out.Body.transformToByteArray();
+    return Buffer.from(arr);
+  } catch (err) {
+    const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (e?.name === "NoSuchKey" || e?.$metadata?.httpStatusCode === 404) return null;
+    throw err;
+  }
+}

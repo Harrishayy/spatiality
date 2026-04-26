@@ -35,6 +35,19 @@ segment scene_id="test_scene_v0":
 segment-real scene_id="test_scene_v0" keyframes="12":
     uv run python -m segmentation --scene-id {{scene_id}} --real --keyframes {{keyframes}}
 
+# Per-object watertight meshes → 3MF + OBJ + STL. Spec: 11_cad_export.md.
+# E1 (foundations) ships a stub CLI; E2-E7 fill in real stages.
+cad-export scene_id="demo_scene_v1":
+    uv run python -m cad_export --scene-id {{scene_id}}
+
+# Fixture-driven checks for E2 (views), E4 (register), E5 (fallback), E6 (qc + assemble), E7 (orchestrator).
+# No real scene needed — runs entirely on synthesized cameras + cube/sphere/cone meshes.
+cad-verify:
+    uv run python cad_export/scripts/verify_e2.py
+    uv run python cad_export/scripts/verify_e4_e5.py
+    uv run python cad_export/scripts/verify_e6.py
+    uv run python cad_export/scripts/verify_e7.py
+
 # Round-trip every JSON/YAML artifact through pydantic
 check scene_id="test_scene_v0":
     uv run python shared/scripts/validate.py artifacts/scenes/{{scene_id}}

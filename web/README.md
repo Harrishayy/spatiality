@@ -50,6 +50,6 @@ pnpm start
 
 ## What's NOT in here (per spec)
 
-- Upload UI — wire when `/api/upload` is live (Devin)
+- Upload UI — wire when `/api/upload` is live
 - Voice input — stretch
 - PWA manifest — stretch

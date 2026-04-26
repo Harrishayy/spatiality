@@ -19,7 +19,7 @@ in the viewer.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import logfire
@@ -41,6 +41,9 @@ class Cluster:
     anchor_area: int
     sources: tuple[str, ...] = ()  # subset of {"sam", "vlm"}, sorted
     proposed_phrase: str = ""  # best VLM phrase for the group; empty if SAM-only
+    # Up to 6 frame names where this object appears, sorted. Used by the
+    # multimodal chat agent to pull keyframes for visual reasoning.
+    frame_ids: list[str] = field(default_factory=list)
 
 
 def _project(point_xyz: np.ndarray, extrinsic: np.ndarray, intrinsic: np.ndarray) -> tuple[int, int, float] | None:

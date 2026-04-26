@@ -54,6 +54,8 @@ export interface ChatMessage {
   role: "user" | "agent";
   text: string;
   pending?: boolean;
+  frames_used?: string[];
+  tools_called?: string[];
 }
 
 export type VlmModelId = "claude-haiku-4-5" | "claude-sonnet-4-6" | "claude-opus-4-7";

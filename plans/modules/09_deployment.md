@@ -103,6 +103,39 @@ def run_inference(payload: dict):
 
 Deploy: `modal deploy inference/modal_app.py`. Endpoint URL is logged on deploy — set as `MODAL_INFERENCE_URL` in Render env.
 
+## CAD export weight upload (one-time per environment)
+
+Module 11 (`cad_export`) uses TRELLIS.2-4B running on the same Modal app, but
+on a separate `image_cad` Image (derived from the inference `image` so CUDA +
+torch base layers cache-share). The model is MIT-licensed; no acceptable-use
+gate beyond standard MIT. See `11_cad_export.md` for the full module spec.
+
+Uploading weights to the existing `glasses-twin-weights` Modal Volume:
+
+```bash
+# One-time. ~16 GB transfer; persists across deploys.
+# After upload, COMMON_ENV_CAD points TRELLIS_WEIGHTS_DIR=/weights/trellis2 and
+# HF_HOME=/weights/trellis2/.hf so re-runs hit the cache.
+modal volume put glasses-twin-weights ./trellis2 trellis2
+```
+
+If you don't have the weights downloaded locally yet, the simplest path is:
+
+```bash
+# On a machine with bandwidth + disk:
+huggingface-cli download microsoft/TRELLIS.2-4B --local-dir ./trellis2
+modal volume put glasses-twin-weights ./trellis2 trellis2
+```
+
+Alternatively, the first cold-start of `cad_export_object` will pull weights
+into `/weights/trellis2/.hf` automatically — but that costs ~15 minutes on the
+first per-image cold start. The pre-upload path is preferred.
+
+NKSR is intentionally **not** in `image_cad` (the CUDA-kernel build is
+brittle on CUDA 12.4). `cad_export.fallback` falls through to Open3D
+screened Poisson when NKSR is missing, and `COMMON_ENV_CAD` pins
+`CAD_FALLBACK=poisson` to skip the auto-mode probe.
+
 ## Render Persistent Disk ↔ Modal Volume sync
 
 This is the trickiest piece. The `/agent` service writes to `/var/data/artifacts` on Render's disk; Modal reads/writes the same logical structure on a Modal Volume.

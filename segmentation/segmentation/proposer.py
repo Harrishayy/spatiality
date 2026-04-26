@@ -47,16 +47,22 @@ class Proposal:
     confidence: float
 
 
-_PROPOSER_PROMPT = """You're inventorying objects in a 3D scan of a real room. List EVERY distinct physical object visible in this image. For each object, return:
-- "phrase": the most specific name you can (brand or model when visible, e.g. "MacBook Air M3", "Yeti microphone").
-- "fallback": a short descriptive phrase ("silver laptop", "stack of books").
+_PROPOSER_PROMPT = """You're inventorying objects in a 3D scan of a real room. List EVERY distinct physical object visible in this image — including SMALL items: socks, pens, mugs, books, plush toys, figurines, remotes, cables, tape dispensers, stationery, jewellery. Small items are NOT "parts" of whatever surface they rest on; a sock on a bed is its own entry, not part of the bed.
+
+For each object, return:
+- "phrase": the most specific canonical name for the WHOLE object. Brand/model/character is encouraged when clearly visible ("MacBook Air M3", "Stitch plush toy", "Amazon Echo Dot"). Material/colour descriptors are encouraged ("white cotton sock", "plaid pajama pants", "Lilo & Stitch plush toy", "spiral notebook").
+- "fallback": the bare common noun ("laptop", "plush toy", "speaker", "sock", "notebook").
 - "bbox": [x, y, w, h] in normalized [0, 1] image coords, where (x, y) is the top-left corner.
 - "confidence": 0..1.
+
+CRITICAL — never combine TWO distinct objects into one entry. The phrase MUST NOT contain the connectors "with", "and", "on", "next", "near", "behind", "under", "above" used to fold one object into another's name. If you see two objects together (e.g. clothes draped over a door, or a notebook with a pen on it), return TWO entries — one for each object — never a single compound entry like "door with clothes" or "notebook with pen". Adjective chains describing ONE object are fine ("white cotton sock", "Lilo & Stitch plush toy"); compound phrases joining TWO objects are not.
+
+Don't decompose monolithic objects into their physical parts. A door has a handle/frame/hinges — return ONE entry, "door", not three. A laptop has a keyboard and screen — return one entry. But a remote on a sofa, a sock on a bed, or a mug on a desk IS its own entry — those are physically detached.
 
 Skip walls, floors, ceilings, windows, and large architectural surfaces. Skip people. Skip the same object twice within this image.
 
 Reply with ONE JSON array, no prose, no code fence:
-[{"phrase": "MacBook Air M3", "fallback": "silver laptop", "bbox": [0.41, 0.62, 0.18, 0.10], "confidence": 0.86}, ...]"""
+[{"phrase": "MacBook Air M3", "fallback": "laptop", "bbox": [0.41, 0.62, 0.18, 0.10], "confidence": 0.86}, ...]"""
 
 
 def _frame_to_b64(path: Path) -> str:

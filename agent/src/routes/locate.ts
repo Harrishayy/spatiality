@@ -113,9 +113,7 @@ export const locateRoute: FastifyPluginAsync = async (app) => {
     }
 
     // Find the tool_use block; tool_choice forces it but be defensive.
-    const toolBlock = resp.content.find(
-      (b: (typeof resp.content)[number]) => b.type === "tool_use",
-    );
+    const toolBlock = resp.content.find((b) => b.type === "tool_use");
     if (!toolBlock || toolBlock.type !== "tool_use") {
       request.log.error({ resp }, "no tool_use block returned");
       return reply.code(502).send({ error: "agent returned no tool call" });

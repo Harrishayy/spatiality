@@ -25,6 +25,7 @@ class Annotation(BaseModel):
     alternatives: list[str] = Field(default_factory=list)
     cluster_gaussian_indices: list[int] = Field(default_factory=list)
     provenance: list[str] = Field(default_factory=list)
+    frame_ids: list[str] = Field(default_factory=list)
 
 
 class AnnotationsFile(RootModel[list[Annotation]]):

@@ -1,6 +1,6 @@
 """Generate a complete, schema-valid stub scene at artifacts/scenes/test_scene_v0/.
 
-This is what Devin's /web + /agent build against from hour 0. It's also what
+This is what /web + /agent build against from hour 0. It's also what
 each module CLI stub regenerates its own slice of in Sessions B/C/D.
 
 Idempotent — safe to re-run.

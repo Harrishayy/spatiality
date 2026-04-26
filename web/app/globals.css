@@ -31,7 +31,7 @@ body {
   border-radius: 3px;
 }
 
-/* Annotation pin glow */
+/* Annotation pin glow — apricot to match the sunset accent ramp */
 .pin-glow {
-  filter: drop-shadow(0 0 6px rgba(124, 92, 255, 0.4));
+  filter: drop-shadow(0 0 6px rgba(255, 157, 111, 0.55));
 }

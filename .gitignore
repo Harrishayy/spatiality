@@ -15,11 +15,13 @@ sdist/
 wheels/
 *.egg-link
 .installed.cfg
-lib/
-lib64/
+/lib/
+/lib64/
 
 # Virtual environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

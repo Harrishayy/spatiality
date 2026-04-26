@@ -29,6 +29,7 @@ Each Claude Code session is scoped to one of these. The user's first prompt will
 - Type everything: pydantic models for Python data, TS interfaces for JS data.
 - Git commit after each module reaches "scaffolded with stub output" state.
 - All env vars documented in `.env.example`. Never commit secrets.
+- **UI design system.** Visual contract lives in [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md): warm-sunset `ink/accent` tokens, `.lp-*` component class API, voice & copy rules. Tokens are wired in [`web/tailwind.config.mjs`](web/tailwind.config.mjs) + [`web/app/styles/landing.css`](web/app/styles/landing.css); live reference at `/design-system`. Match it pixel-for-pixel; don't fork class names; don't introduce new accent colors outside the coral → apricot → gold ramp.
 
 ## When ambiguity hits
 - Read the relevant module file in `plans/modules/`. The answer is usually there.

@@ -32,13 +32,13 @@ By default the app talks to itself: a mock API (`app/lib/api.ts`) returns the de
 Set `NEXT_PUBLIC_AGENT_URL` and Next rewrites `/api` and `/artifacts` to the agent service:
 
 ```
-NEXT_PUBLIC_AGENT_URL=https://glasses-twin-agent.onrender.com pnpm dev
+NEXT_PUBLIC_AGENT_URL=https://spatiality-agent.onrender.com pnpm dev
 ```
 
 Or build for prod:
 
 ```
-NEXT_PUBLIC_AGENT_URL=https://glasses-twin-agent.onrender.com pnpm build
+NEXT_PUBLIC_AGENT_URL=https://spatiality-agent.onrender.com pnpm build
 pnpm start
 ```
 

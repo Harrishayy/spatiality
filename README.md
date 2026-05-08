@@ -127,17 +127,6 @@ Every span lands in Logfire under the canonical names defined in [`shared/shared
 
 ---
 
-## Hard rules (don't violate)
-
-- **File contract.** Modules read/write `artifacts/scenes/<scene_id>/` and conform exactly to the pydantic schemas in `shared/`.
-- **Model traffic.** *Every* Anthropic call routes through Pydantic AI Gateway via [`shared/shared/gateway.py`](shared/shared/gateway.py). Bearer (`authToken`), not `apiKey`. Startup asserts this; CI greps for it (`scripts/check_gateway.sh`).
-- **Observability.** Every Python pipeline stage emits Logfire spans using the constants in `shared/shared/observability.py`. Never inline span name strings.
-- **No database.** Flat files only.
-- **No auth.** Single-scene demo.
-- **Stub aggressively.** A working end-to-end pipeline with stubs in some modules beats one polished module. Use `TODO(swap):` to mark deferred work.
-
----
-
 ## License
 
 Hackathon prototype. No license attached yet — get in touch before reusing.

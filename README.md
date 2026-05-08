@@ -138,18 +138,6 @@ Every span lands in Logfire under the canonical names defined in [`shared/shared
 
 ---
 
-## Sponsor integrations
-
-- **Modal** — inference + segmentation deployed as web endpoints; H100 GPU, 30-min timeouts, two persistent volumes (`glasses-twin-artifacts`, `glasses-twin-weights`).
-- **Pydantic AI Gateway** — every model call routed and metered. Enforcement at startup means it's structurally impossible to bypass.
-- **Pydantic Logfire** — full-pipeline distributed tracing. The viewer renders a live trace waterfall keyed by `scene_id`, with deep links into the Logfire UI.
-- **Pydantic** (the library) — every schema, every artifact, every config. `just check` round-trips on demand.
-- **Anthropic** — Claude Haiku 4.5 powers both the segmentation labeller and the agent tool-use loop.
-- **Render** — agent + web are the public surface; both run on starter plans with a shared persistent disk.
-- **Cloudflare R2** — public splat mirror so the browser fetches `splat.ply` directly.
-
----
-
 ## License
 
 Hackathon prototype. No license attached yet — get in touch before reusing.
